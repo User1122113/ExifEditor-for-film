@@ -14,7 +14,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 # (Prompt 2에서 실제로 사용)
-from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont  # noqa: F401
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageTk  # noqa: F401
 import piexif
 import piexif.helper
 
@@ -119,41 +119,78 @@ def resolve_font(font_path: str | None, font_size: int) -> ImageFont.FreeTypeFon
     return ImageFont.load_default()
 
 
-def overlay_dateback_stamp(img: Image.Image, text: str, font_path: str | None) -> Image.Image:
+def overlay_dateback_stamp(
+    img: Image.Image,
+    text: str,
+    font_path: str | None,
+    blur_strength: float,
+    font_ratio: float,
+    offset_x: int,
+    offset_y: int,
+) -> Image.Image:
     width, height = img.size
-    margin = max(int(width * 0.02), 12)
-    font_size = max(int(width * 0.035), 18)
+    base_length = min(width, height)
+    margin = max(int(base_length * 0.02), 12)
+    font_size = max(int(base_length * font_ratio), 18)
     font = resolve_font(font_path, font_size)
 
-    mask = Image.new("L", img.size, 0)
-    draw = ImageDraw.Draw(mask)
-    bbox = draw.textbbox((0, 0), text, font=font)
+    temp_draw = ImageDraw.Draw(Image.new("L", (1, 1), 0))
+    bbox = temp_draw.textbbox((0, 0), text, font=font)
     text_w = bbox[2] - bbox[0]
     text_h = bbox[3] - bbox[1]
-    x = width - margin - text_w
-    y = height - margin - text_h
-    draw.text((x, y), text, fill=255, font=font)
+    x = width - margin - text_w + offset_x
+    y = height - margin - text_h + offset_y
+
+    blur_pad = max(int(font_size * 0.3), 6)
+    left = max(x - blur_pad, 0)
+    top = max(y - blur_pad, 0)
+    right = min(x + text_w + blur_pad, width)
+    bottom = min(y + text_h + blur_pad, height)
+
+    patch_w = max(right - left, 1)
+    patch_h = max(bottom - top, 1)
+
+    mask = Image.new("L", (patch_w, patch_h), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.text((x - left, y - top), text, fill=255, font=font)
 
     main_alpha = mask
-    glow_alpha = mask.filter(ImageFilter.GaussianBlur(radius=max(font_size * 0.4, 2)))
-    smear_alpha = mask.filter(ImageFilter.BoxBlur(radius=max(font_size * 0.15, 1)))
+    glow_alpha = mask.filter(
+        ImageFilter.GaussianBlur(radius=max(font_size * 0.18 * blur_strength, 1))
+    )
+    smear_alpha = mask.filter(
+        ImageFilter.BoxBlur(radius=max(font_size * 0.10 * blur_strength, 1))
+    )
 
     def colorize(alpha_mask: Image.Image, color: tuple[int, int, int], alpha_scale: float) -> Image.Image:
-        rgba = Image.new("RGBA", img.size, color + (0,))
+        rgba = Image.new("RGBA", (patch_w, patch_h), color + (0,))
         alpha = alpha_mask.point(lambda p: int(p * alpha_scale))
         rgba.putalpha(alpha)
         return rgba
 
-    main_layer = colorize(main_alpha, (255, 110, 40), 0.9)
-    glow_layer = colorize(glow_alpha, (255, 80, 10), 0.55)
-    smear_layer = colorize(smear_alpha, (255, 130, 60), 0.35)
+    main_layer = colorize(main_alpha, (255, 110, 40), 0.8)
+    glow_layer = colorize(glow_alpha, (255, 80, 10), 0.35 * blur_strength)
+    smear_layer = colorize(smear_alpha, (255, 130, 60), 0.22 * blur_strength)
 
     combined = Image.alpha_composite(glow_layer, smear_layer)
     combined = Image.alpha_composite(combined, main_layer)
 
     base = img.convert("RGBA")
-    stamped = ImageChops.screen(base, combined)
-    return stamped.convert(img.mode)
+    patch = base.crop((left, top, right, bottom))
+    stamped_patch = ImageChops.screen(patch, combined)
+    base.paste(stamped_patch, (left, top))
+    return base.convert(img.mode)
+
+
+def apply_exif_orientation(img: Image.Image) -> tuple[Image.Image, bool]:
+    try:
+        exif = img.getexif()
+    except (AttributeError, ValueError):
+        return img, False
+    orientation = exif.get(274)
+    if orientation in (3, 6, 8):
+        return ImageOps.exif_transpose(img), True
+    return img, False
 
 
 class App(tk.Tk):
@@ -170,6 +207,10 @@ class App(tk.Tk):
         self.var_film = tk.StringVar(value="")
         self.var_stamp = tk.BooleanVar(value=False)
         self.var_stamp_fmt = tk.StringVar(value="YY MM DD")
+        self.var_blur_strength = tk.DoubleVar(value=0.35)
+        self.var_font_ratio = tk.DoubleVar(value=0.035)
+        self.var_offset_x = tk.IntVar(value=0)
+        self.var_offset_y = tk.IntVar(value=0)
 
         self.font_path: str | None = None
         self.var_font_label = tk.StringVar(value="(미지정)")
@@ -244,8 +285,60 @@ class App(tk.Tk):
             textvariable=self.var_stamp_fmt,
             width=12,
             state="readonly",
-            values=["YY MM DD", "YYYY-MM-DD"],
+            values=["'YY MM DD", "YYYY MM DD"],
         ).pack(side=tk.LEFT, padx=6)
+
+        stamp_opts = ttk.Frame(right)
+        stamp_opts.pack(fill=tk.X, pady=(12, 0))
+        ttk.Label(stamp_opts, text="Blur 강도").grid(row=0, column=0, sticky="w")
+        ttk.Scale(
+            stamp_opts,
+            from_=0.1,
+            to=1.0,
+            orient=tk.HORIZONTAL,
+            variable=self.var_blur_strength,
+        ).grid(row=0, column=1, sticky="we", padx=8)
+        ttk.Label(stamp_opts, textvariable=self.var_blur_strength, width=6).grid(
+            row=0,
+            column=2,
+            sticky="e",
+        )
+
+        ttk.Label(stamp_opts, text="폰트 크기 비율").grid(row=1, column=0, sticky="w", pady=(8, 0))
+        ttk.Scale(
+            stamp_opts,
+            from_=0.02,
+            to=0.08,
+            orient=tk.HORIZONTAL,
+            variable=self.var_font_ratio,
+        ).grid(row=1, column=1, sticky="we", padx=8, pady=(8, 0))
+        ttk.Label(stamp_opts, textvariable=self.var_font_ratio, width=6).grid(
+            row=1,
+            column=2,
+            sticky="e",
+            pady=(8, 0),
+        )
+
+        offset_row = ttk.Frame(right)
+        offset_row.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(offset_row, text="가로 오프셋").pack(side=tk.LEFT)
+        tk.Spinbox(
+            offset_row,
+            from_=-50,
+            to=50,
+            textvariable=self.var_offset_x,
+            width=6,
+        ).pack(side=tk.LEFT, padx=(6, 12))
+        ttk.Label(offset_row, text="세로 오프셋").pack(side=tk.LEFT)
+        tk.Spinbox(
+            offset_row,
+            from_=-50,
+            to=50,
+            textvariable=self.var_offset_y,
+            width=6,
+        ).pack(side=tk.LEFT, padx=6)
+
+        stamp_opts.columnconfigure(1, weight=1)
 
         font_row = ttk.Frame(right)
         font_row.pack(fill=tk.X, pady=(12, 0))
@@ -260,7 +353,8 @@ class App(tk.Tk):
 
         run = ttk.Frame(right)
         run.pack(fill=tk.X, pady=(18, 0))
-        ttk.Button(run, text="EXIF 기록 및 저장", command=self._run).pack(side=tk.LEFT)
+        ttk.Button(run, text="미리보기", command=self._preview).pack(side=tk.LEFT)
+        ttk.Button(run, text="EXIF 기록 및 저장", command=self._run).pack(side=tk.LEFT, padx=(8, 0))
 
         self.progress = ttk.Progressbar(right, mode="determinate")
         self.progress.pack(fill=tk.X, pady=(10, 0))
@@ -355,6 +449,64 @@ class App(tk.Tk):
             return dt.strftime("%Y-%m-%d")
         return dt.strftime("%y %m %d")
 
+    def _get_preview_item(self) -> FileItem | None:
+        selected_indices = list(self.listbox.curselection())
+        if not selected_indices:
+            messagebox.showwarning("안내", "왼쪽 목록에서 미리보기할 파일을 선택하세요.")
+            return None
+        return self.items[selected_indices[0]]
+
+    def _preview(self):
+        item = self._get_preview_item()
+        if item is None:
+            return
+        if item.assigned_date is None:
+            messagebox.showerror("오류", "선택된 파일에 날짜가 지정되어 있지 않습니다.")
+            return
+        try:
+            start_time = parse_time_hh_mm(self.var_time.get())
+        except ValueError:
+            messagebox.showerror("오류", "기준 시작 시간 형식이 올바르지 않습니다. 예: 12:00")
+            return
+
+        do_stamp = bool(self.var_stamp.get())
+        current_dt = datetime.combine(item.assigned_date, start_time)
+
+        try:
+            with Image.open(item.path) as img:
+                img.load()
+                oriented_img, _ = apply_exif_orientation(img)
+                preview_img = oriented_img.copy()
+                if do_stamp:
+                    stamp_text = self._make_stamp_text(current_dt)
+                    preview_img = overlay_dateback_stamp(
+                        preview_img,
+                        stamp_text,
+                        self.font_path,
+                        float(self.var_blur_strength.get()),
+                        float(self.var_font_ratio.get()),
+                        int(self.var_offset_x.get()),
+                        int(self.var_offset_y.get()),
+                    )
+        except Exception as exc:
+            messagebox.showerror("오류", f"미리보기 생성 실패: {exc}")
+            return
+
+        preview_win = tk.Toplevel(self)
+        preview_win.title("미리보기")
+        preview_win.geometry("900x700")
+
+        canvas = tk.Canvas(preview_win, bg="#111")
+        canvas.pack(fill=tk.BOTH, expand=True)
+
+        preview_img = preview_img.copy()
+        preview_img.thumbnail((860, 600))
+        photo = ImageTk.PhotoImage(preview_img)
+        canvas.image = photo
+        canvas.create_image(0, 0, anchor="nw", image=photo)
+
+        ttk.Button(preview_win, text="닫기", command=preview_win.destroy).pack(pady=8)
+
     def _run(self):
         if not self.items:
             messagebox.showwarning("안내", "처리할 JPG 파일이 없습니다.")
@@ -409,12 +561,25 @@ class App(tk.Tk):
                     else:
                         with Image.open(item.path) as img:
                             img.load()
+                            oriented_img, did_orient = apply_exif_orientation(img)
                             stamp_text = self._make_stamp_text(current_dt)
-                            stamped = overlay_dateback_stamp(img, stamp_text, self.font_path)
+                            stamped = overlay_dateback_stamp(
+                                oriented_img,
+                                stamp_text,
+                                self.font_path,
+                                float(self.var_blur_strength.get()),
+                                float(self.var_font_ratio.get()),
+                                int(self.var_offset_x.get()),
+                                int(self.var_offset_y.get()),
+                            )
                             if stamped.mode != "RGB":
                                 stamped = stamped.convert("RGB")
                             existing_exif = img.info.get("exif")
                             new_exif = build_exif_bytes(existing_exif, current_dt, film_info)
+                            if did_orient:
+                                exif_dict = piexif.load(new_exif)
+                                exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
+                                new_exif = piexif.dump(exif_dict)
                             icc_profile = img.info.get("icc_profile")
                             stamped.save(
                                 out_path,
