@@ -21,6 +21,10 @@ import piexif.helper
 EXIF_DT_FMT = "%Y:%m:%d %H:%M:%S"
 # 기본 폰트 경로: fonts 폴더에 E1234.ttf를 배치하세요.
 DEFAULT_FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "E1234.ttf")
+DEFAULT_BLUR_STRENGTH = 0.15
+DEFAULT_FONT_RATIO = 0.03
+DEFAULT_OFFSET_X = -20
+DEFAULT_OFFSET_Y = -20
 
 
 @dataclass
@@ -119,7 +123,7 @@ def resolve_font(font_path: str | None, font_size: int) -> ImageFont.FreeTypeFon
     return ImageFont.load_default()
 
 
-def overlay_dateback_stamp(
+def _render_stamp_with_settings(
     img: Image.Image,
     text: str,
     font_path: str | None,
@@ -158,28 +162,35 @@ def overlay_dateback_stamp(
     glow_alpha = mask.filter(
         ImageFilter.GaussianBlur(radius=max(font_size * 0.18 * blur_strength, 1))
     )
-    smear_alpha = mask.filter(
-        ImageFilter.BoxBlur(radius=max(font_size * 0.10 * blur_strength, 1))
-    )
-
-    def colorize(alpha_mask: Image.Image, color: tuple[int, int, int], alpha_scale: float) -> Image.Image:
-        rgba = Image.new("RGBA", (patch_w, patch_h), color + (0,))
-        alpha = alpha_mask.point(lambda p: int(p * alpha_scale))
-        rgba.putalpha(alpha)
-        return rgba
-
-    main_layer = colorize(main_alpha, (255, 110, 40), 0.8)
-    glow_layer = colorize(glow_alpha, (255, 80, 10), 0.35 * blur_strength)
-    smear_layer = colorize(smear_alpha, (255, 130, 60), 0.22 * blur_strength)
-
-    combined = Image.alpha_composite(glow_layer, smear_layer)
-    combined = Image.alpha_composite(combined, main_layer)
 
     base = img.convert("RGBA")
-    patch = base.crop((left, top, right, bottom))
-    stamped_patch = ImageChops.screen(patch, combined)
-    base.paste(stamped_patch, (left, top))
+    base_patch = base.crop((left, top, right, bottom))
+    blurred_patch = base_patch.filter(
+        ImageFilter.GaussianBlur(radius=max(font_size * 0.12 * blur_strength, 1))
+    )
+
+    softened_patch = Image.composite(blurred_patch, base_patch, glow_alpha)
+
+    text_layer = Image.new("RGBA", (patch_w, patch_h), (255, 110, 40, 0))
+    text_layer.putalpha(main_alpha)
+
+    combined_patch = ImageChops.screen(softened_patch, text_layer)
+    final_patch = Image.composite(combined_patch, base_patch, glow_alpha)
+
+    base.paste(final_patch, (left, top))
     return base.convert(img.mode)
+
+
+def overlay_dateback_stamp(img: Image.Image, text: str, font_path: str | None) -> Image.Image:
+    return _render_stamp_with_settings(
+        img,
+        text,
+        font_path,
+        DEFAULT_BLUR_STRENGTH,
+        DEFAULT_FONT_RATIO,
+        DEFAULT_OFFSET_X,
+        DEFAULT_OFFSET_Y,
+    )
 
 
 def apply_exif_orientation(img: Image.Image) -> tuple[Image.Image, bool]:
@@ -205,12 +216,12 @@ class App(tk.Tk):
         self.var_date = tk.StringVar(value="")
         self.var_time = tk.StringVar(value="12:00")
         self.var_film = tk.StringVar(value="")
-        self.var_stamp = tk.BooleanVar(value=False)
-        self.var_stamp_fmt = tk.StringVar(value="YY MM DD")
-        self.var_blur_strength = tk.DoubleVar(value=0.35)
-        self.var_font_ratio = tk.DoubleVar(value=0.035)
-        self.var_offset_x = tk.IntVar(value=0)
-        self.var_offset_y = tk.IntVar(value=0)
+        self.var_stamp = tk.BooleanVar(value=True)
+        self.var_stamp_fmt = tk.StringVar(value="'YY MM DD")
+        self.var_blur_strength = tk.DoubleVar(value=0.15)
+        self.var_font_ratio = tk.DoubleVar(value=0.03)
+        self.var_offset_x = tk.IntVar(value=-20)
+        self.var_offset_y = tk.IntVar(value=-20)
 
         self.font_path: str | None = None
         self.var_font_label = tk.StringVar(value="(미지정)")
@@ -400,7 +411,6 @@ class App(tk.Tk):
     def _on_select(self):
         selected_indices = list(self.listbox.curselection())
         if not selected_indices:
-            self.var_date.set("")
             return
         selected_dates = []
         for index in selected_indices:
@@ -408,10 +418,6 @@ class App(tk.Tk):
         first = selected_dates[0]
         if all(date_value == first for date_value in selected_dates) and first is not None:
             self.var_date.set(first.strftime("%Y-%m-%d"))
-        elif all(date_value == first for date_value in selected_dates) and first is None:
-            self.var_date.set("")
-        else:
-            self.var_date.set("")
 
     def _apply_date(self):
         selected_indices = list(self.listbox.curselection())
@@ -445,8 +451,10 @@ class App(tk.Tk):
         self.var_font_label.set(os.path.basename(font_path))
 
     def _make_stamp_text(self, dt: datetime) -> str:
-        if self.var_stamp_fmt.get() == "YYYY-MM-DD":
-            return dt.strftime("%Y-%m-%d")
+        if self.var_stamp_fmt.get() == "YYYY MM DD":
+            return dt.strftime("%Y %m %d")
+        if self.var_stamp_fmt.get() in ("'YY MM DD", "YY MM DD"):
+            return f"'{dt.strftime('%y %m %d')}"
         return dt.strftime("%y %m %d")
 
     def _get_preview_item(self) -> FileItem | None:
@@ -479,7 +487,7 @@ class App(tk.Tk):
                 preview_img = oriented_img.copy()
                 if do_stamp:
                     stamp_text = self._make_stamp_text(current_dt)
-                    preview_img = overlay_dateback_stamp(
+                    preview_img = _render_stamp_with_settings(
                         preview_img,
                         stamp_text,
                         self.font_path,
@@ -563,7 +571,7 @@ class App(tk.Tk):
                             img.load()
                             oriented_img, did_orient = apply_exif_orientation(img)
                             stamp_text = self._make_stamp_text(current_dt)
-                            stamped = overlay_dateback_stamp(
+                            stamped = _render_stamp_with_settings(
                                 oriented_img,
                                 stamp_text,
                                 self.font_path,
