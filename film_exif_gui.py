@@ -19,6 +19,8 @@ import piexif
 import piexif.helper
 
 EXIF_DT_FMT = "%Y:%m:%d %H:%M:%S"
+# 기본 폰트 경로: fonts 폴더에 E1234.ttf를 배치하세요.
+DEFAULT_FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "E1234.ttf")
 
 
 @dataclass
@@ -91,6 +93,11 @@ def resolve_font(font_path: str | None, font_size: int) -> ImageFont.FreeTypeFon
     if font_path:
         try:
             return ImageFont.truetype(font_path, font_size)
+        except OSError:
+            pass
+    else:
+        try:
+            return ImageFont.truetype(DEFAULT_FONT_PATH, font_size)
         except OSError:
             pass
 
