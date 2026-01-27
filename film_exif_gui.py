@@ -502,16 +502,23 @@ class App(tk.Tk):
 
         preview_win = tk.Toplevel(self)
         preview_win.title("미리보기")
-        preview_win.geometry("900x700")
-
-        canvas = tk.Canvas(preview_win, bg="#111")
-        canvas.pack(fill=tk.BOTH, expand=True)
 
         preview_img = preview_img.copy()
         preview_img.thumbnail((860, 600))
+        img_width, img_height = preview_img.size
+
+        preview_win.geometry(f"{img_width + 40}x{img_height + 80}")
+
+        canvas = tk.Canvas(preview_win, bg="#111")
+        canvas.pack(pady=(12, 0))
+        canvas.config(width=img_width, height=img_height)
+
         photo = ImageTk.PhotoImage(preview_img)
         canvas.image = photo
-        canvas.create_image(0, 0, anchor="nw", image=photo)
+        preview_win.update_idletasks()
+        x = max(0, (canvas.winfo_width() - photo.width()) // 2)
+        y = max(0, (canvas.winfo_height() - photo.height()) // 2)
+        canvas.create_image(x, y, anchor="nw", image=photo)
 
         ttk.Button(preview_win, text="닫기", command=preview_win.destroy).pack(pady=8)
 
@@ -557,7 +564,7 @@ class App(tk.Tk):
             base_dt = datetime.combine(group_date, start_time)
             for idx, item in enumerate(group_items):
                 current_dt = base_dt + timedelta(minutes=idx)
-                basename = os.path.basename(item.path)
+                basename = current_dt.strftime("%Y%m%d%H%M") + ".jpg"
                 out_path = safe_out_path(self.out_dir, basename)
                 try:
                     if not is_jpeg_path(item.path):
