@@ -332,11 +332,6 @@ class App(tk.Tk):
             side=tk.LEFT, padx=(6, 0)
         )
 
-        out = ttk.Frame(right)
-        out.pack(fill=tk.X, pady=(14, 0))
-        self.lbl_out = ttk.Label(out, text="(미지정)")
-        self.lbl_out.pack(side=tk.LEFT, padx=10)
-
         stamp = ttk.Frame(right)
         stamp.pack(fill=tk.X, pady=(14, 0))
         ttk.Checkbutton(
@@ -419,13 +414,15 @@ class App(tk.Tk):
             variable=self.var_continue_on_error,
         ).pack(anchor="w", pady=(10, 0))
 
-        run = ttk.Frame(right)
-        run.pack(fill=tk.X, pady=(18, 0))
-        ttk.Button(run, text="미리보기", command=self._preview).pack(side=tk.LEFT)
-        ttk.Button(run, text="EXIF 기록 및 저장", command=self._run).pack(side=tk.LEFT, padx=(8, 0))
-        ttk.Button(run, text="출력 폴더 선택", command=self._choose_out_dir).pack(
+        self.run_row = ttk.Frame(right)
+        self.run_row.pack(fill=tk.X, pady=(18, 0))
+        ttk.Button(self.run_row, text="미리보기", command=self._preview).pack(side=tk.LEFT)
+        ttk.Button(self.run_row, text="EXIF 기록 및 저장", command=self._run).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(self.run_row, text="출력 폴더 선택", command=self._choose_out_dir).pack(
             side=tk.LEFT, padx=(8, 0)
         )
+        self.lbl_out = ttk.Label(self.run_row, text="(미지정)")
+        self.lbl_out.pack(side=tk.LEFT, padx=(8, 0))
 
         self._toggle_stamp_options()
 
@@ -537,17 +534,20 @@ class App(tk.Tk):
             "camera_model": self.var_camera_model.get().strip(),
             "lens": self.var_lens.get().strip(),
         }
-        profile_dir = Path("Camera Profile")
+        profile_dir = Path(__file__).resolve().parent / "Camera Profile"
         profile_dir.mkdir(parents=True, exist_ok=True)
-        filename = datetime.now().strftime("%Y%m%d_%H%M%S.json")
+        safe_camera = (profile["camera_model"] or "camera").strip().replace(" ", "_")
+        safe_lens = (profile["lens"] or "lens").strip().replace(" ", "_")
+        filename = f"{safe_camera}-{safe_lens}.json"
         path = profile_dir / filename
         with path.open("w", encoding="utf-8") as handle:
             json.dump(profile, handle, ensure_ascii=False, indent=2)
         messagebox.showinfo("완료", f"카메라 프로파일을 저장했습니다: {path}")
 
     def _import_camera_profile(self):
+        profile_dir = Path(__file__).resolve().parent / "Camera Profile"
         file_path = filedialog.askopenfilename(
-            initialdir="Camera Profile",
+            initialdir=str(profile_dir),
             title="카메라 프로파일 선택",
             filetypes=[("JSON", "*.json")],
         )
@@ -562,7 +562,7 @@ class App(tk.Tk):
             messagebox.showerror("오류", f"프로파일 불러오기 실패: {exc}")
 
     def _load_default_camera_profile(self):
-        profile_dir = Path("Camera Profile")
+        profile_dir = Path(__file__).resolve().parent / "Camera Profile"
         if not profile_dir.exists():
             return
         try:
@@ -595,7 +595,7 @@ class App(tk.Tk):
 
     def _toggle_stamp_options(self):
         if self.var_stamp.get():
-            self.stamp_opt_container.pack(fill=tk.X, pady=(12, 0))
+            self.stamp_opt_container.pack(before=self.run_row, fill=tk.X, pady=(12, 0))
         else:
             self.stamp_opt_container.pack_forget()
 
@@ -675,7 +675,7 @@ class App(tk.Tk):
         if not self.items:
             messagebox.showwarning("안내", "처리할 JPG 파일이 없습니다.")
             return
-        if not self.out_dir:
+        if self.var_stamp.get() and not self.out_dir:
             messagebox.showwarning("안내", "출력 폴더를 선택하세요.")
             return
         missing = [item for item in self.items if item.assigned_date is None]
@@ -716,7 +716,10 @@ class App(tk.Tk):
             for idx, item in enumerate(group_items):
                 current_dt = base_dt + timedelta(minutes=idx)
                 basename = current_dt.strftime("%Y%m%d%H%M") + ".jpg"
-                out_path = safe_out_path(self.out_dir, basename)
+                if do_stamp:
+                    out_path = safe_out_path(self.out_dir, basename)
+                else:
+                    out_path = item.path
                 try:
                     if not is_jpeg_path(item.path):
                         raise ValueError("JPEG 파일만 처리할 수 있습니다.")
@@ -780,7 +783,8 @@ class App(tk.Tk):
                 self.update_idletasks()
 
         success = total - failures
-        self.lbl_status.config(text=f"완료: {success}개 성공 / {failures}개 실패 ({self.out_dir})")
+        out_label = self.out_dir if do_stamp else "원본 파일"
+        self.lbl_status.config(text=f"완료: {success}개 성공 / {failures}개 실패 ({out_label})")
         messagebox.showinfo("완료", f"EXIF 기록 및 저장 완료: {success}개 성공, {failures}개 실패")
 
 
