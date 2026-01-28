@@ -7,9 +7,11 @@ from __future__ import annotations
 #   pip install -r requirements.txt
 #   python film_exif_gui.py
 
+import json
 import os
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -31,6 +33,7 @@ DEFAULT_OFFSET_Y = -20
 class FileItem:
     path: str
     assigned_date: date | None = None
+    location: str = ""
 
 
 def parse_date_yyyy_mm_dd(s: str) -> date:
@@ -71,7 +74,14 @@ def load_existing_exif_bytes_from_file(src_path: str) -> bytes | None:
         return None
 
 
-def build_exif_bytes(existing_exif: bytes | None, dt: datetime, film_info: str) -> bytes:
+def build_exif_bytes(
+    existing_exif: bytes | None,
+    dt: datetime,
+    film_info: str,
+    camera_model: str,
+    lens: str,
+    location: str,
+) -> bytes:
     if existing_exif:
         exif_dict = piexif.load(existing_exif)
     else:
@@ -89,6 +99,18 @@ def build_exif_bytes(existing_exif: bytes | None, dt: datetime, film_info: str) 
             film_info,
             encoding="unicode",
         )
+
+    camera_model = (camera_model or "").strip()
+    if camera_model:
+        exif_dict["0th"][piexif.ImageIFD.Model] = camera_model.encode("utf-8", errors="replace")
+
+    lens = (lens or "").strip()
+    if lens:
+        exif_dict["Exif"][piexif.ExifIFD.LensModel] = lens.encode("utf-8", errors="replace")
+
+    location = (location or "").strip()
+    if location:
+        exif_dict["GPS"][piexif.GPSIFD.GPSAreaInformation] = location.encode("utf-8", errors="replace")
 
     return piexif.dump(exif_dict)
 
@@ -216,6 +238,9 @@ class App(tk.Tk):
         self.var_date = tk.StringVar(value="")
         self.var_time = tk.StringVar(value="12:00")
         self.var_film = tk.StringVar(value="")
+        self.var_location = tk.StringVar(value="")
+        self.var_camera_model = tk.StringVar(value="")
+        self.var_lens = tk.StringVar(value="")
         self.var_stamp = tk.BooleanVar(value=True)
         self.var_stamp_fmt = tk.StringVar(value="'YY MM DD")
         self.var_blur_strength = tk.DoubleVar(value=0.15)
@@ -228,6 +253,7 @@ class App(tk.Tk):
         self.var_continue_on_error = tk.BooleanVar(value=False)
 
         self._build_ui()
+        self._load_default_camera_profile()
 
     def _build_ui(self):
         paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
@@ -237,7 +263,7 @@ class App(tk.Tk):
         left = ttk.Frame(paned)
         paned.add(left, weight=1)
 
-        self.listbox = tk.Listbox(left, selectmode=tk.EXTENDED)
+        self.listbox = tk.Listbox(left, selectmode=tk.EXTENDED, exportselection=False)
         self.listbox.pack(fill=tk.BOTH, expand=True)
         self.listbox.bind("<<ListboxSelect>>", lambda e: self._on_select())
 
@@ -246,6 +272,7 @@ class App(tk.Tk):
 
         ttk.Button(btns, text="JPG 추가", command=self._add_files).pack(side=tk.LEFT)
         ttk.Button(btns, text="선택 제거", command=self._remove_selected).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(btns, text="모두 제거", command=self._remove_all).pack(side=tk.LEFT, padx=(8, 0))
 
         # Right panel
         right = ttk.Frame(paned)
@@ -277,9 +304,36 @@ class App(tk.Tk):
             pady=(10, 0),
         )
 
+        ttk.Label(form, text="선택 항목 장소").grid(row=3, column=0, sticky="w", pady=(10, 0))
+        ttk.Entry(form, textvariable=self.var_location, width=54).grid(
+            row=3,
+            column=1,
+            sticky="we",
+            padx=8,
+            pady=(10, 0),
+        )
+        ttk.Button(form, text="선택 항목에 장소 적용", command=self._apply_location).grid(
+            row=3,
+            column=2,
+            sticky="w",
+            pady=(10, 0),
+        )
+
+        cam_prof = ttk.Frame(right)
+        cam_prof.pack(fill=tk.X, pady=(12, 0))
+        ttk.Label(cam_prof, text="카메라 기종").pack(side=tk.LEFT)
+        ttk.Entry(cam_prof, textvariable=self.var_camera_model, width=20).pack(side=tk.LEFT, padx=(6, 12))
+        ttk.Label(cam_prof, text="렌즈").pack(side=tk.LEFT)
+        ttk.Entry(cam_prof, textvariable=self.var_lens, width=20).pack(side=tk.LEFT, padx=(6, 12))
+        ttk.Button(cam_prof, text="내보내기", command=self._export_camera_profile).pack(
+            side=tk.LEFT, padx=(6, 0)
+        )
+        ttk.Button(cam_prof, text="불러오기", command=self._import_camera_profile).pack(
+            side=tk.LEFT, padx=(6, 0)
+        )
+
         out = ttk.Frame(right)
         out.pack(fill=tk.X, pady=(14, 0))
-        ttk.Button(out, text="출력 폴더 선택", command=self._choose_out_dir).pack(side=tk.LEFT)
         self.lbl_out = ttk.Label(out, text="(미지정)")
         self.lbl_out.pack(side=tk.LEFT, padx=10)
 
@@ -289,6 +343,7 @@ class App(tk.Tk):
             stamp,
             text="우측 하단 날짜 스탬프(픽셀 오버레이)",
             variable=self.var_stamp,
+            command=self._toggle_stamp_options,
         ).pack(side=tk.LEFT)
         ttk.Label(stamp, text="포맷").pack(side=tk.LEFT, padx=(12, 0))
         ttk.Combobox(
@@ -299,8 +354,10 @@ class App(tk.Tk):
             values=["'YY MM DD", "YYYY MM DD"],
         ).pack(side=tk.LEFT, padx=6)
 
-        stamp_opts = ttk.Frame(right)
-        stamp_opts.pack(fill=tk.X, pady=(12, 0))
+        self.stamp_opt_container = ttk.Frame(right)
+
+        stamp_opts = ttk.Frame(self.stamp_opt_container)
+        stamp_opts.pack(fill=tk.X)
         ttk.Label(stamp_opts, text="Blur 강도").grid(row=0, column=0, sticky="w")
         ttk.Scale(
             stamp_opts,
@@ -330,7 +387,7 @@ class App(tk.Tk):
             pady=(8, 0),
         )
 
-        offset_row = ttk.Frame(right)
+        offset_row = ttk.Frame(self.stamp_opt_container)
         offset_row.pack(fill=tk.X, pady=(8, 0))
         ttk.Label(offset_row, text="가로 오프셋").pack(side=tk.LEFT)
         tk.Spinbox(
@@ -351,7 +408,7 @@ class App(tk.Tk):
 
         stamp_opts.columnconfigure(1, weight=1)
 
-        font_row = ttk.Frame(right)
+        font_row = ttk.Frame(self.stamp_opt_container)
         font_row.pack(fill=tk.X, pady=(12, 0))
         ttk.Button(font_row, text="폰트 파일 선택(선택)", command=self._choose_font).pack(side=tk.LEFT)
         ttk.Label(font_row, textvariable=self.var_font_label).pack(side=tk.LEFT, padx=10)
@@ -366,6 +423,11 @@ class App(tk.Tk):
         run.pack(fill=tk.X, pady=(18, 0))
         ttk.Button(run, text="미리보기", command=self._preview).pack(side=tk.LEFT)
         ttk.Button(run, text="EXIF 기록 및 저장", command=self._run).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(run, text="출력 폴더 선택", command=self._choose_out_dir).pack(
+            side=tk.LEFT, padx=(8, 0)
+        )
+
+        self._toggle_stamp_options()
 
         self.progress = ttk.Progressbar(right, mode="determinate")
         self.progress.pack(fill=tk.X, pady=(10, 0))
@@ -378,7 +440,8 @@ class App(tk.Tk):
             date_text = "미지정"
         else:
             date_text = item.assigned_date.strftime("%Y-%m-%d")
-        return f"{filename}   [{date_text}]"
+        location_text = f" / {item.location}" if item.location else ""
+        return f"{filename}   [{date_text}]{location_text}"
 
     def _refresh_list(self):
         self.listbox.delete(0, tk.END)
@@ -408,16 +471,30 @@ class App(tk.Tk):
         self._refresh_list()
         self.var_date.set("")
 
+    def _remove_all(self):
+        if not self.items:
+            return
+        self.items.clear()
+        self._refresh_list()
+        self.var_date.set("")
+        self.var_location.set("")
+        messagebox.showinfo("안내", "모든 파일이 목록에서 제거되었습니다.")
+
     def _on_select(self):
         selected_indices = list(self.listbox.curselection())
         if not selected_indices:
             return
         selected_dates = []
+        selected_locations = []
         for index in selected_indices:
             selected_dates.append(self.items[index].assigned_date)
+            selected_locations.append(self.items[index].location)
         first = selected_dates[0]
         if all(date_value == first for date_value in selected_dates) and first is not None:
             self.var_date.set(first.strftime("%Y-%m-%d"))
+        location_first = selected_locations[0]
+        if all(location_value == location_first for location_value in selected_locations):
+            self.var_location.set(location_first)
 
     def _apply_date(self):
         selected_indices = list(self.listbox.curselection())
@@ -432,6 +509,72 @@ class App(tk.Tk):
         for index in selected_indices:
             self.items[index].assigned_date = new_date
         self._refresh_list()
+        self.listbox.selection_clear(0, tk.END)
+        for index in selected_indices:
+            self.listbox.select_set(index)
+        if selected_indices:
+            self.listbox.activate(selected_indices[0])
+            self.listbox.see(selected_indices[0])
+
+    def _apply_location(self):
+        selected_indices = list(self.listbox.curselection())
+        if not selected_indices:
+            messagebox.showwarning("안내", "왼쪽 목록에서 파일을 선택하세요.")
+            return
+        location = self.var_location.get().strip()
+        for index in selected_indices:
+            self.items[index].location = location
+        self._refresh_list()
+        self.listbox.selection_clear(0, tk.END)
+        for index in selected_indices:
+            self.listbox.select_set(index)
+        if selected_indices:
+            self.listbox.activate(selected_indices[0])
+            self.listbox.see(selected_indices[0])
+
+    def _export_camera_profile(self):
+        profile = {
+            "camera_model": self.var_camera_model.get().strip(),
+            "lens": self.var_lens.get().strip(),
+        }
+        profile_dir = Path("Camera Profile")
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        filename = datetime.now().strftime("%Y%m%d_%H%M%S.json")
+        path = profile_dir / filename
+        with path.open("w", encoding="utf-8") as handle:
+            json.dump(profile, handle, ensure_ascii=False, indent=2)
+        messagebox.showinfo("완료", f"카메라 프로파일을 저장했습니다: {path}")
+
+    def _import_camera_profile(self):
+        file_path = filedialog.askopenfilename(
+            initialdir="Camera Profile",
+            title="카메라 프로파일 선택",
+            filetypes=[("JSON", "*.json")],
+        )
+        if not file_path:
+            return
+        try:
+            with open(file_path, "r", encoding="utf-8") as handle:
+                profile = json.load(handle)
+            self.var_camera_model.set(profile.get("camera_model", ""))
+            self.var_lens.set(profile.get("lens", ""))
+        except Exception as exc:
+            messagebox.showerror("오류", f"프로파일 불러오기 실패: {exc}")
+
+    def _load_default_camera_profile(self):
+        profile_dir = Path("Camera Profile")
+        if not profile_dir.exists():
+            return
+        try:
+            profiles = sorted(profile_dir.glob("*.json"), key=os.path.getmtime, reverse=True)
+            if not profiles:
+                return
+            with profiles[0].open("r", encoding="utf-8") as handle:
+                profile = json.load(handle)
+            self.var_camera_model.set(profile.get("camera_model", ""))
+            self.var_lens.set(profile.get("lens", ""))
+        except Exception:
+            return
 
     def _choose_out_dir(self):
         out_dir = filedialog.askdirectory(title="출력 폴더 선택")
@@ -449,6 +592,12 @@ class App(tk.Tk):
             return
         self.font_path = font_path
         self.var_font_label.set(os.path.basename(font_path))
+
+    def _toggle_stamp_options(self):
+        if self.var_stamp.get():
+            self.stamp_opt_container.pack(fill=tk.X, pady=(12, 0))
+        else:
+            self.stamp_opt_container.pack_forget()
 
     def _make_stamp_text(self, dt: datetime) -> str:
         if self.var_stamp_fmt.get() == "YYYY MM DD":
@@ -543,6 +692,8 @@ class App(tk.Tk):
             return
 
         film_info = self.var_film.get().strip()
+        camera_model = self.var_camera_model.get().strip()
+        lens = self.var_lens.get().strip()
         do_stamp = bool(self.var_stamp.get())
         continue_on_error = bool(self.var_continue_on_error.get())
 
@@ -571,7 +722,14 @@ class App(tk.Tk):
                         raise ValueError("JPEG 파일만 처리할 수 있습니다.")
                     if not do_stamp:
                         existing_exif = load_existing_exif_bytes_from_file(item.path)
-                        exif_bytes = build_exif_bytes(existing_exif, current_dt, film_info)
+                        exif_bytes = build_exif_bytes(
+                            existing_exif,
+                            current_dt,
+                            film_info,
+                            camera_model,
+                            lens,
+                            item.location,
+                        )
                         piexif.insert(exif_bytes, item.path, out_path)
                     else:
                         with Image.open(item.path) as img:
@@ -590,7 +748,14 @@ class App(tk.Tk):
                             if stamped.mode != "RGB":
                                 stamped = stamped.convert("RGB")
                             existing_exif = img.info.get("exif")
-                            new_exif = build_exif_bytes(existing_exif, current_dt, film_info)
+                            new_exif = build_exif_bytes(
+                                existing_exif,
+                                current_dt,
+                                film_info,
+                                camera_model,
+                                lens,
+                                item.location,
+                            )
                             if did_orient:
                                 exif_dict = piexif.load(new_exif)
                                 exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
