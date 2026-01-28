@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+from fractions import Fraction
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -34,6 +35,14 @@ class FileItem:
     path: str
     assigned_date: date | None = None
     location: str = ""
+    lat_deg: int | None = None
+    lat_min: int | None = None
+    lat_sec: float | None = None
+    lat_ref: str = "N"
+    lon_deg: int | None = None
+    lon_min: int | None = None
+    lon_sec: float | None = None
+    lon_ref: str = "E"
 
 
 def parse_date_yyyy_mm_dd(s: str) -> date:
@@ -76,25 +85,29 @@ def load_existing_exif_bytes_from_file(src_path: str) -> bytes | None:
 
 def build_exif_bytes(
     existing_exif: bytes | None,
-    dt: datetime,
+    dt: datetime | None,
     film_info: str,
     camera_model: str,
     lens: str,
     location: str,
+    gps_lat: tuple[int, int, float, str] | None,
+    gps_lon: tuple[int, int, float, str] | None,
 ) -> bytes:
     if existing_exif:
         exif_dict = piexif.load(existing_exif)
     else:
         exif_dict = {"0th": {}, "Exif": {}, "GPS": {}, "1st": {}, "thumbnail": None}
 
-    dt_str = dt.strftime(EXIF_DT_FMT).encode("ascii")
-    exif_dict["0th"][piexif.ImageIFD.DateTime] = dt_str
-    exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal] = dt_str
-    exif_dict["Exif"][piexif.ExifIFD.DateTimeDigitized] = dt_str
+    if dt is not None:
+        dt_str = dt.strftime(EXIF_DT_FMT).encode("ascii")
+        exif_dict["0th"][piexif.ImageIFD.DateTime] = dt_str
+        exif_dict["Exif"][piexif.ExifIFD.DateTimeOriginal] = dt_str
+        exif_dict["Exif"][piexif.ExifIFD.DateTimeDigitized] = dt_str
 
     film_info = (film_info or "").strip()
     if film_info:
         exif_dict["0th"][piexif.ImageIFD.ImageDescription] = film_info.encode("utf-8", errors="replace")
+        exif_dict["0th"][piexif.ImageIFD.XPKeywords] = film_info.encode("utf-16le") + b"\x00\x00"
         exif_dict["Exif"][piexif.ExifIFD.UserComment] = piexif.helper.UserComment.dump(
             film_info,
             encoding="unicode",
@@ -109,10 +122,30 @@ def build_exif_bytes(
         exif_dict["Exif"][piexif.ExifIFD.LensModel] = lens.encode("utf-8", errors="replace")
 
     location = (location or "").strip()
-    if location:
+    if gps_lat and gps_lon:
+        lat_deg, lat_min, lat_sec, lat_ref = gps_lat
+        lon_deg, lon_min, lon_sec, lon_ref = gps_lon
+        exif_dict["GPS"][piexif.GPSIFD.GPSLatitudeRef] = lat_ref.encode("ascii")
+        exif_dict["GPS"][piexif.GPSIFD.GPSLongitudeRef] = lon_ref.encode("ascii")
+        exif_dict["GPS"][piexif.GPSIFD.GPSLatitude] = [
+            (lat_deg, 1),
+            (lat_min, 1),
+            _to_rational(lat_sec),
+        ]
+        exif_dict["GPS"][piexif.GPSIFD.GPSLongitude] = [
+            (lon_deg, 1),
+            (lon_min, 1),
+            _to_rational(lon_sec),
+        ]
+    elif location:
         exif_dict["GPS"][piexif.GPSIFD.GPSAreaInformation] = location.encode("utf-8", errors="replace")
 
     return piexif.dump(exif_dict)
+
+
+def _to_rational(value: float, max_denominator: int = 100000000) -> tuple[int, int]:
+    frac = Fraction(value).limit_denominator(max_denominator)
+    return frac.numerator, frac.denominator
 
 
 def resolve_font(font_path: str | None, font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
@@ -238,10 +271,17 @@ class App(tk.Tk):
         self.var_date = tk.StringVar(value="")
         self.var_time = tk.StringVar(value="12:00")
         self.var_film = tk.StringVar(value="")
-        self.var_location = tk.StringVar(value="")
+        self.var_lat_deg = tk.StringVar(value="")
+        self.var_lat_min = tk.StringVar(value="")
+        self.var_lat_sec = tk.StringVar(value="")
+        self.var_lat_ref = tk.StringVar(value="N")
+        self.var_lon_deg = tk.StringVar(value="")
+        self.var_lon_min = tk.StringVar(value="")
+        self.var_lon_sec = tk.StringVar(value="")
+        self.var_lon_ref = tk.StringVar(value="E")
         self.var_camera_model = tk.StringVar(value="")
         self.var_lens = tk.StringVar(value="")
-        self.var_stamp = tk.BooleanVar(value=True)
+        self.var_stamp = tk.BooleanVar(value=False)
         self.var_stamp_fmt = tk.StringVar(value="'YY MM DD")
         self.var_blur_strength = tk.DoubleVar(value=0.15)
         self.var_font_ratio = tk.DoubleVar(value=0.03)
@@ -304,18 +344,53 @@ class App(tk.Tk):
             pady=(10, 0),
         )
 
-        ttk.Label(form, text="선택 항목 장소").grid(row=3, column=0, sticky="w", pady=(10, 0))
-        ttk.Entry(form, textvariable=self.var_location, width=54).grid(
-            row=3,
-            column=1,
-            sticky="we",
-            padx=8,
-            pady=(10, 0),
+        ttk.Label(form, text="위도 (φ) D/M/S").grid(row=3, column=0, sticky="w", pady=(10, 0))
+        lat_frame = ttk.Frame(form)
+        lat_frame.grid(row=3, column=1, sticky="w", padx=8, pady=(10, 0))
+        tk.Spinbox(lat_frame, from_=0, to=90, width=5, textvariable=self.var_lat_deg).pack(
+            side=tk.LEFT
         )
-        ttk.Button(form, text="선택 항목에 장소 적용", command=self._apply_location).grid(
+        ttk.Label(lat_frame, text="°").pack(side=tk.LEFT, padx=(2, 6))
+        tk.Spinbox(lat_frame, from_=0, to=59, width=5, textvariable=self.var_lat_min).pack(
+            side=tk.LEFT
+        )
+        ttk.Label(lat_frame, text="′").pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Entry(lat_frame, width=8, textvariable=self.var_lat_sec).pack(side=tk.LEFT)
+        ttk.Label(lat_frame, text="″").pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Combobox(
+            lat_frame,
+            width=3,
+            textvariable=self.var_lat_ref,
+            values=["N", "S"],
+            state="readonly",
+        ).pack(side=tk.LEFT)
+
+        ttk.Label(form, text="경도 (λ) D/M/S").grid(row=4, column=0, sticky="w", pady=(10, 0))
+        lon_frame = ttk.Frame(form)
+        lon_frame.grid(row=4, column=1, sticky="w", padx=8, pady=(10, 0))
+        tk.Spinbox(lon_frame, from_=0, to=180, width=5, textvariable=self.var_lon_deg).pack(
+            side=tk.LEFT
+        )
+        ttk.Label(lon_frame, text="°").pack(side=tk.LEFT, padx=(2, 6))
+        tk.Spinbox(lon_frame, from_=0, to=59, width=5, textvariable=self.var_lon_min).pack(
+            side=tk.LEFT
+        )
+        ttk.Label(lon_frame, text="′").pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Entry(lon_frame, width=8, textvariable=self.var_lon_sec).pack(side=tk.LEFT)
+        ttk.Label(lon_frame, text="″").pack(side=tk.LEFT, padx=(2, 6))
+        ttk.Combobox(
+            lon_frame,
+            width=3,
+            textvariable=self.var_lon_ref,
+            values=["E", "W"],
+            state="readonly",
+        ).pack(side=tk.LEFT)
+
+        ttk.Button(form, text="선택 항목에 좌표 적용", command=self._apply_gps).grid(
             row=3,
             column=2,
             sticky="w",
+            padx=(0, 4),
             pady=(10, 0),
         )
 
@@ -474,7 +549,6 @@ class App(tk.Tk):
         self.items.clear()
         self._refresh_list()
         self.var_date.set("")
-        self.var_location.set("")
         messagebox.showinfo("안내", "모든 파일이 목록에서 제거되었습니다.")
 
     def _on_select(self):
@@ -482,16 +556,37 @@ class App(tk.Tk):
         if not selected_indices:
             return
         selected_dates = []
-        selected_locations = []
+        selected_lat = []
+        selected_lon = []
         for index in selected_indices:
             selected_dates.append(self.items[index].assigned_date)
-            selected_locations.append(self.items[index].location)
+            selected_lat.append(
+                (
+                    self.items[index].lat_deg,
+                    self.items[index].lat_min,
+                    self.items[index].lat_sec,
+                    self.items[index].lat_ref,
+                )
+            )
+            selected_lon.append(
+                (
+                    self.items[index].lon_deg,
+                    self.items[index].lon_min,
+                    self.items[index].lon_sec,
+                    self.items[index].lon_ref,
+                )
+            )
         first = selected_dates[0]
         if all(date_value == first for date_value in selected_dates) and first is not None:
             self.var_date.set(first.strftime("%Y-%m-%d"))
-        location_first = selected_locations[0]
-        if all(location_value == location_first for location_value in selected_locations):
-            self.var_location.set(location_first)
+        lat_first = selected_lat[0]
+        if all(lat_value == lat_first for lat_value in selected_lat):
+            if any(value is not None for value in lat_first[:3]):
+                self._set_lat_fields(lat_first)
+        lon_first = selected_lon[0]
+        if all(lon_value == lon_first for lon_value in selected_lon):
+            if any(value is not None for value in lon_first[:3]):
+                self._set_lon_fields(lon_first)
 
     def _apply_date(self):
         selected_indices = list(self.listbox.curselection())
@@ -513,14 +608,29 @@ class App(tk.Tk):
             self.listbox.activate(selected_indices[0])
             self.listbox.see(selected_indices[0])
 
-    def _apply_location(self):
+    def _apply_gps(self):
         selected_indices = list(self.listbox.curselection())
         if not selected_indices:
             messagebox.showwarning("안내", "왼쪽 목록에서 파일을 선택하세요.")
             return
-        location = self.var_location.get().strip()
+
+        try:
+            lat_deg, lat_min, lat_sec, lat_ref = self._parse_lat_fields()
+            lon_deg, lon_min, lon_sec, lon_ref = self._parse_lon_fields()
+        except ValueError as exc:
+            messagebox.showerror("오류", f"좌표 입력 오류: {exc}")
+            return
+
         for index in selected_indices:
-            self.items[index].location = location
+            item = self.items[index]
+            item.lat_deg = lat_deg
+            item.lat_min = lat_min
+            item.lat_sec = lat_sec
+            item.lat_ref = lat_ref
+            item.lon_deg = lon_deg
+            item.lon_min = lon_min
+            item.lon_sec = lon_sec
+            item.lon_ref = lon_ref
         self._refresh_list()
         self.listbox.selection_clear(0, tk.END)
         for index in selected_indices:
@@ -528,6 +638,72 @@ class App(tk.Tk):
         if selected_indices:
             self.listbox.activate(selected_indices[0])
             self.listbox.see(selected_indices[0])
+
+    def _set_lat_fields(self, values: tuple[int | None, int | None, float | None, str]):
+        lat_deg, lat_min, lat_sec, lat_ref = values
+        self.var_lat_deg.set("" if lat_deg is None else str(lat_deg))
+        self.var_lat_min.set("" if lat_min is None else str(lat_min))
+        self.var_lat_sec.set("" if lat_sec is None else str(lat_sec))
+        if lat_ref:
+            self.var_lat_ref.set(lat_ref)
+
+    def _set_lon_fields(self, values: tuple[int | None, int | None, float | None, str]):
+        lon_deg, lon_min, lon_sec, lon_ref = values
+        self.var_lon_deg.set("" if lon_deg is None else str(lon_deg))
+        self.var_lon_min.set("" if lon_min is None else str(lon_min))
+        self.var_lon_sec.set("" if lon_sec is None else str(lon_sec))
+        if lon_ref:
+            self.var_lon_ref.set(lon_ref)
+
+    def _parse_lat_fields(self) -> tuple[int, int, float, str]:
+        lat_ref = self.var_lat_ref.get().strip().upper() or "N"
+        if lat_ref not in ("N", "S"):
+            raise ValueError("위도 방향은 N 또는 S여야 합니다.")
+        lat_deg = self._require_int(self.var_lat_deg.get(), "위도 도")
+        lat_min = self._require_int(self.var_lat_min.get(), "위도 분")
+        lat_sec = self._require_float(self.var_lat_sec.get(), "위도 초")
+        self._validate_dms(lat_deg, lat_min, lat_sec, is_lat=True)
+        return lat_deg, lat_min, lat_sec, lat_ref
+
+    def _parse_lon_fields(self) -> tuple[int, int, float, str]:
+        lon_ref = self.var_lon_ref.get().strip().upper() or "E"
+        if lon_ref not in ("E", "W"):
+            raise ValueError("경도 방향은 E 또는 W여야 합니다.")
+        lon_deg = self._require_int(self.var_lon_deg.get(), "경도 도")
+        lon_min = self._require_int(self.var_lon_min.get(), "경도 분")
+        lon_sec = self._require_float(self.var_lon_sec.get(), "경도 초")
+        self._validate_dms(lon_deg, lon_min, lon_sec, is_lat=False)
+        return lon_deg, lon_min, lon_sec, lon_ref
+
+    @staticmethod
+    def _require_int(value: str, label: str) -> int:
+        value = value.strip()
+        if value == "":
+            raise ValueError(f"{label} 값이 비어 있습니다.")
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise ValueError(f"{label} 값이 숫자가 아닙니다.") from exc
+
+    @staticmethod
+    def _require_float(value: str, label: str) -> float:
+        value = value.strip()
+        if value == "":
+            raise ValueError(f"{label} 값이 비어 있습니다.")
+        try:
+            return float(value)
+        except ValueError as exc:
+            raise ValueError(f"{label} 값이 숫자가 아닙니다.") from exc
+
+    @staticmethod
+    def _validate_dms(deg: int, minute: int, second: float, is_lat: bool) -> None:
+        max_deg = 90 if is_lat else 180
+        if not (0 <= deg <= max_deg):
+            raise ValueError(f"도 값은 0~{max_deg} 범위여야 합니다.")
+        if not (0 <= minute <= 59):
+            raise ValueError("분 값은 0~59 범위여야 합니다.")
+        if not (0 <= second < 60):
+            raise ValueError("초 값은 0~59.999 범위여야 합니다.")
 
     def _export_camera_profile(self):
         profile = {
@@ -593,6 +769,16 @@ class App(tk.Tk):
         self.font_path = font_path
         self.var_font_label.set(os.path.basename(font_path))
 
+    def _get_item_gps_lat(self, item: FileItem) -> tuple[int, int, float, str] | None:
+        if item.lat_deg is None or item.lat_min is None or item.lat_sec is None:
+            return None
+        return item.lat_deg, item.lat_min, item.lat_sec, item.lat_ref
+
+    def _get_item_gps_lon(self, item: FileItem) -> tuple[int, int, float, str] | None:
+        if item.lon_deg is None or item.lon_min is None or item.lon_sec is None:
+            return None
+        return item.lon_deg, item.lon_min, item.lon_sec, item.lon_ref
+
     def _toggle_stamp_options(self):
         if self.var_stamp.get():
             self.stamp_opt_container.pack(before=self.run_row, fill=tk.X, pady=(12, 0))
@@ -617,24 +803,26 @@ class App(tk.Tk):
         item = self._get_preview_item()
         if item is None:
             return
-        if item.assigned_date is None:
-            messagebox.showerror("오류", "선택된 파일에 날짜가 지정되어 있지 않습니다.")
-            return
-        try:
-            start_time = parse_time_hh_mm(self.var_time.get())
-        except ValueError:
-            messagebox.showerror("오류", "기준 시작 시간 형식이 올바르지 않습니다. 예: 12:00")
-            return
-
         do_stamp = bool(self.var_stamp.get())
-        current_dt = datetime.combine(item.assigned_date, start_time)
+        current_dt = None
+        if do_stamp and item.assigned_date is not None:
+            try:
+                start_time = parse_time_hh_mm(self.var_time.get())
+            except ValueError:
+                start_time = None
+            if start_time is not None:
+                current_dt = datetime.combine(item.assigned_date, start_time)
+            else:
+                do_stamp = False
+        else:
+            do_stamp = False
 
         try:
             with Image.open(item.path) as img:
                 img.load()
                 oriented_img, _ = apply_exif_orientation(img)
                 preview_img = oriented_img.copy()
-                if do_stamp:
+                if do_stamp and current_dt is not None:
                     stamp_text = self._make_stamp_text(current_dt)
                     preview_img = _render_stamp_with_settings(
                         preview_img,
@@ -678,18 +866,13 @@ class App(tk.Tk):
         if self.var_stamp.get() and not self.out_dir:
             messagebox.showwarning("안내", "출력 폴더를 선택하세요.")
             return
-        missing = [item for item in self.items if item.assigned_date is None]
-        if missing:
-            messagebox.showerror(
-                "오류",
-                "날짜가 미지정인 파일이 있습니다. 각 파일(또는 선택 항목)에 날짜를 적용하세요.",
-            )
-            return
-        try:
-            start_time = parse_time_hh_mm(self.var_time.get())
-        except ValueError:
-            messagebox.showerror("오류", "기준 시작 시간 형식이 올바르지 않습니다. 예: 12:00")
-            return
+        start_time: time | None = None
+        if any(item.assigned_date is not None for item in self.items):
+            try:
+                start_time = parse_time_hh_mm(self.var_time.get())
+            except ValueError:
+                messagebox.showerror("오류", "기준 시작 시간 형식이 올바르지 않습니다. 예: 12:00")
+                return
 
         film_info = self.var_film.get().strip()
         camera_model = self.var_camera_model.get().strip()
@@ -697,9 +880,8 @@ class App(tk.Tk):
         do_stamp = bool(self.var_stamp.get())
         continue_on_error = bool(self.var_continue_on_error.get())
 
-        items_by_date: dict[date, list[FileItem]] = {}
+        items_by_date: dict[date | None, list[FileItem]] = {}
         for item in self.items:
-            assert item.assigned_date is not None
             items_by_date.setdefault(item.assigned_date, []).append(item)
 
         total = len(self.items)
@@ -709,13 +891,24 @@ class App(tk.Tk):
 
         processed = 0
         failures = 0
-        for group_date in sorted(items_by_date.keys()):
+        def _date_sort_key(value: date | None) -> tuple[int, date]:
+            if value is None:
+                return 1, date.min
+            return 0, value
+
+        for group_date in sorted(items_by_date.keys(), key=_date_sort_key):
             group_items = items_by_date[group_date]
             group_items.sort(key=lambda it: os.path.basename(it.path).lower())
-            base_dt = datetime.combine(group_date, start_time)
+            base_dt = None
+            if group_date is not None and start_time is not None:
+                base_dt = datetime.combine(group_date, start_time)
             for idx, item in enumerate(group_items):
-                current_dt = base_dt + timedelta(minutes=idx)
-                basename = current_dt.strftime("%Y%m%d%H%M") + ".jpg"
+                current_dt = None
+                if base_dt is not None:
+                    current_dt = base_dt + timedelta(minutes=idx)
+                basename = (
+                    current_dt.strftime("%Y%m%d%H%M") if current_dt else "exif"
+                ) + ".jpg"
                 if do_stamp:
                     out_path = safe_out_path(self.out_dir, basename)
                 else:
@@ -723,6 +916,8 @@ class App(tk.Tk):
                 try:
                     if not is_jpeg_path(item.path):
                         raise ValueError("JPEG 파일만 처리할 수 있습니다.")
+                    gps_lat = self._get_item_gps_lat(item)
+                    gps_lon = self._get_item_gps_lon(item)
                     if not do_stamp:
                         existing_exif = load_existing_exif_bytes_from_file(item.path)
                         exif_bytes = build_exif_bytes(
@@ -732,9 +927,13 @@ class App(tk.Tk):
                             camera_model,
                             lens,
                             item.location,
+                            gps_lat,
+                            gps_lon,
                         )
                         piexif.insert(exif_bytes, item.path, out_path)
                     else:
+                        if current_dt is None:
+                            raise ValueError("날짜가 지정되지 않아 스탬프를 적용할 수 없습니다.")
                         with Image.open(item.path) as img:
                             img.load()
                             oriented_img, did_orient = apply_exif_orientation(img)
@@ -758,6 +957,8 @@ class App(tk.Tk):
                                 camera_model,
                                 lens,
                                 item.location,
+                                gps_lat,
+                                gps_lon,
                             )
                             if did_orient:
                                 exif_dict = piexif.load(new_exif)
