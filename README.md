@@ -88,5 +88,5 @@ piexif>=1.1.3
 
 ## 라이선스 및 기여 (License & Contributing)
 
-- 라이선스가 아직 명시되지 않았습니다. 필요 시 `LICENSE` 파일을 추가해주세요.
+- 이 프로젝트는 Apache License 2.0으로 배포됩니다. 자세한 내용은 `LICENSE` 파일을 참고하세요.
 - 기여/문의: Issue 또는 PR로 남겨주세요.
