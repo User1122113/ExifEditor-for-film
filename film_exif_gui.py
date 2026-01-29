@@ -20,7 +20,6 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk, font as tkfont
 
-# (Prompt 2에서 실제로 사용)
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageTk  # noqa: F401
 import piexif
 import piexif.helper
