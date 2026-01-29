@@ -6,12 +6,12 @@
 
 - 여러 JPG 파일에 날짜/시간(EXIF `DateTime`, `DateTimeOriginal`, `DateTimeDigitized`)을 일괄 기록
 - 필름 정보 저장(EXIF `ImageDescription`, `UserComment`, `XPKeywords`)
-- GPS 좌표 기록(도·분·초 DMS 입력, EXIF `GPSLatitude/Longitude` 및 `GPSLatitudeRef/LongitudeRef`)
+- GPS 좌표 기록(소수점 좌표 입력, EXIF `GPSLatitude/Longitude` 및 `GPSLatitudeRef/LongitudeRef`)
 - 날짜 스탬프(픽셀 오버레이): 포맷 선택(`'YY MM DD`, `YYYY MM DD`), 글자 크기/블러/오프셋 조절
 - 미리보기: 날짜 입력/스탬프 설정과 무관하게 원본 이미지를 미리보기로 표시
 - 카메라 프로파일 내보내기/불러오기 (`Camera Profile` 폴더)
 - EXIF Orientation 처리로 세로 사진도 올바르게 표시
-- 진행 표시(ProgressBar), 오류 처리 및 오류 무시 옵션
+- 진행 표시(ProgressBar), 오류 처리
 
 ## 설치 방법 (Installation)
 
@@ -49,11 +49,12 @@ python film_exif_gui.py
 ```
 
 1. 좌측에서 JPG 파일을 추가합니다.
-2. 우측에서 날짜(YYYY-MM-DD)와 기준 시간(HH:MM), 필름 정보를 입력합니다. (날짜 없이도 기록 가능)
-3. GPS 좌표(위도/경도)를 필요 시 입력하고 “선택 항목에 좌표 적용”을 클릭합니다.
-4. 스탬프 옵션을 설정합니다. (기본값: OFF)
-5. 스탬프 ON일 때만 출력 폴더를 선택합니다. (OFF일 때는 원본 파일에 EXIF만 기록)
-6. “미리보기”로 결과를 확인한 뒤 “EXIF 기록 및 저장”을 클릭합니다.
+2. 우측에서 날짜(YYYY-MM-DD)와 기준 시간(HH:MM)을 입력합니다. (날짜 없이도 기록 가능)
+3. GPS 좌표(위도/경도)를 필요 시 입력하고 “선택된 사진에 날짜/위치정보 적용”을 클릭합니다.
+4. 필름 정보/카메라 기종/렌즈를 입력합니다.
+5. 스탬프 옵션을 설정합니다. (기본값: OFF)
+6. 스탬프 ON일 때만 출력 폴더를 선택합니다. (OFF일 때는 원본 파일에 EXIF만 기록)
+7. “미리보기”로 결과를 확인한 뒤 “EXIF 기록 및 저장”을 클릭합니다.
 
 ### 스탬프 ON/OFF 동작
 
@@ -71,20 +72,34 @@ python film_exif_gui.py
 - 날짜/시간 파싱 함수
 - EXIF 처리 함수 (`build_exif_bytes`, `load_existing_exif_bytes_from_file`)
 - 스탬프 오버레이 함수 ([`overlay_dateback_stamp()`](film_exif_gui.py:237))
-- GUI 클래스 [`App`](film_exif_gui.py:260) 및 주요 이벤트 메서드 (`_add_files`, `_apply_date`, `_apply_gps`, `_preview`, `_run`)
+- GUI 클래스 [`App`](film_exif_gui.py:260) 및 주요 이벤트 메서드 (`_add_files`, `_apply_selected`, `_preview`, `_run`)
 
 ## 제약 사항 및 참고
 
 - JPEG 파일만 지원합니다.
 - 폰트가 지정되지 않으면 기본 폰트 또는 시스템 폰트를 사용합니다.
-- 대량 처리 중 오류가 발생하면 기본적으로 작업이 중단되며, “오류 발생 시 무시하고 계속” 옵션으로 계속 진행할 수 있습니다.
+- 대량 처리 중 오류가 발생하면 작업이 중단됩니다.
 
 ## requirements.txt
 
 ```text
 Pillow>=10.0.0
 piexif>=1.1.3
+pywebview>=4.4
 ```
+
+## 지도(좌표 선택) 안내
+
+- “지도에서 불러오기”는 내장 지도 창을 열어 클릭한 위치를 좌표로 불러옵니다.
+- 지도는 OpenStreetMap 타일을 사용합니다.
+
+## OpenStreetMap(OSM) 라이선스 안내
+
+이 앱의 지도 화면은 OpenStreetMap(OSM) 데이터를 사용합니다.
+
+- © OpenStreetMap contributors
+- Open Database License (ODbL) 1.0
+- https://www.openstreetmap.org/copyright
 
 ## 라이선스 및 기여 (License & Contributing)
 
