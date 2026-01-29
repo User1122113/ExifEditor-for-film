@@ -9,9 +9,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import multiprocessing as mp
+import queue
 from fractions import Fraction
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
+from math import floor
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -20,6 +24,7 @@ from tkinter import filedialog, messagebox, ttk
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageTk  # noqa: F401
 import piexif
 import piexif.helper
+import webview
 
 EXIF_DT_FMT = "%Y:%m:%d %H:%M:%S"
 # 기본 폰트 경로: fonts 폴더에 E1234.ttf를 배치하세요.
@@ -29,12 +34,93 @@ DEFAULT_FONT_RATIO = 0.03
 DEFAULT_OFFSET_X = -20
 DEFAULT_OFFSET_Y = -20
 
+_DEC_RE = re.compile(r"(-?\d+(?:\.\d+)?)")
+
+# --- Map Picker (pywebview + Leaflet) ---
+MAP_PICKER_HTML = r"""
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; }
+    .panel {
+      position: absolute; right: 16px; bottom: 16px; z-index: 9999;
+      background: rgba(20,20,20,0.85); color: #fff; padding: 10px 12px;
+      border-radius: 10px; font-family: sans-serif; min-width: 260px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.25);
+    }
+    .row { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    button {
+      width: 100%; margin-top: 8px; padding: 10px 12px;
+      border: 0; border-radius: 10px; cursor: pointer;
+      font-weight: 700;
+    }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .coord { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="panel">
+    <div class="row">
+      <div>선택 좌표</div>
+      <div class="coord" id="coordText">아직 선택 안됨</div>
+    </div>
+    <button id="saveBtn" disabled>위치 저장</button>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    const initLat = __INIT_LAT__;
+    const initLon = __INIT_LON__;
+
+    const map = L.map('map').setView([initLat, initLon], 14);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    let marker = null;
+    let selected = null;
+
+    function setSelected(lat, lon) {
+      selected = { lat, lon };
+      document.getElementById('coordText').textContent =
+        lat.toFixed(6) + ', ' + lon.toFixed(6);
+      document.getElementById('saveBtn').disabled = false;
+      if (marker) marker.remove();
+      marker = L.marker([lat, lon]).addTo(map);
+    }
+
+    map.on('click', (e) => {
+      setSelected(e.latlng.lat, e.latlng.lng);
+    });
+
+    document.getElementById('saveBtn').addEventListener('click', async () => {
+      if (!selected) return;
+      try {
+        await window.pywebview.api.save_location(selected.lat, selected.lon);
+      } catch (err) {
+        alert('저장 실패: ' + err);
+      }
+    });
+  </script>
+</body>
+</html>
+"""
+
 
 @dataclass
 class FileItem:
     path: str
     assigned_date: date | None = None
     location: str = ""
+    lat_dd: float | None = None
+    lon_dd: float | None = None
     lat_deg: int | None = None
     lat_min: int | None = None
     lat_sec: float | None = None
@@ -53,6 +139,87 @@ def parse_date_yyyy_mm_dd(s: str) -> date:
 def parse_time_hh_mm(s: str) -> time:
     s = s.strip()
     return datetime.strptime(s, "%H:%M").time()
+
+
+def parse_decimal_latlon(text: str) -> tuple[float, float]:
+    s = (text or "").strip()
+    nums = _DEC_RE.findall(s)
+    if len(nums) < 2:
+        raise ValueError("좌표에서 위도/경도 숫자 2개를 찾지 못했습니다.")
+    lat = float(nums[0])
+    lon = float(nums[1])
+    if not (-90.0 <= lat <= 90.0):
+        raise ValueError("위도 범위 오류(-90~90)")
+    if not (-180.0 <= lon <= 180.0):
+        raise ValueError("경도 범위 오류(-180~180)")
+    return lat, lon
+
+
+def decimal_to_dms_abs(x: float) -> tuple[int, int, float]:
+    ax = abs(x)
+    deg = int(floor(ax))
+    min_float = (ax - deg) * 60.0
+    minute = int(floor(min_float))
+    sec = (min_float - minute) * 60.0
+    return deg, minute, sec
+
+
+def dms_to_rational(
+    deg: int,
+    minute: int,
+    sec: float,
+    scale: int = 10**7,
+) -> tuple[tuple[int, int], tuple[int, int], tuple[int, int]]:
+    if sec >= 60.0:
+        carry = int(sec // 60.0)
+        sec -= 60.0 * carry
+        minute += carry
+    if minute >= 60:
+        carry = minute // 60
+        minute %= 60
+        deg += carry
+    sec_num = int(round(sec * scale))
+    return ((deg, 1), (minute, 1), (sec_num, scale))
+
+
+def lat_ref(lat: float) -> str:
+    return "N" if lat >= 0 else "S"
+
+
+def lon_ref(lon: float) -> str:
+    return "E" if lon >= 0 else "W"
+
+
+def format_dms(deg: int, minute: int, sec: float, ref: str) -> str:
+    return f"{deg}° {minute}′ {sec:.6f}″ {ref}"
+
+
+class MapPickerAPI:
+    def __init__(self, queue: mp.Queue):
+        self.queue = queue
+
+    def save_location(self, lat: float, lon: float) -> None:
+        lat = float(lat)
+        lon = float(lon)
+        if not (-90.0 <= lat <= 90.0):
+            raise ValueError("위도 범위 오류(-90~90)")
+        if not (-180.0 <= lon <= 180.0):
+            raise ValueError("경도 범위 오류(-180~180)")
+        self.queue.put((lat, lon))
+        try:
+            if webview.windows:
+                webview.windows[0].destroy()
+        except Exception:
+            pass
+
+
+def run_map_picker(queue: mp.Queue, initial_lat: float | None = None, initial_lon: float | None = None) -> None:
+    lat = 37.5665 if initial_lat is None else float(initial_lat)
+    lon = 126.9780 if initial_lon is None else float(initial_lon)
+    html = MAP_PICKER_HTML.replace("__INIT_LAT__", str(lat)).replace("__INIT_LON__", str(lon))
+    api = MapPickerAPI(queue)
+    webview.create_window("지도에서 위치 선택", html=html, js_api=api, width=980, height=700)
+    webview.start(debug=False)
 
 
 def is_jpeg_path(p: str) -> bool:
@@ -92,6 +259,8 @@ def build_exif_bytes(
     location: str,
     gps_lat: tuple[int, int, float, str] | None,
     gps_lon: tuple[int, int, float, str] | None,
+    lat_dd: float | None,
+    lon_dd: float | None,
 ) -> bytes:
     if existing_exif:
         exif_dict = piexif.load(existing_exif)
@@ -122,21 +291,13 @@ def build_exif_bytes(
         exif_dict["Exif"][piexif.ExifIFD.LensModel] = lens.encode("utf-8", errors="replace")
 
     location = (location or "").strip()
-    if gps_lat and gps_lon:
-        lat_deg, lat_min, lat_sec, lat_ref = gps_lat
-        lon_deg, lon_min, lon_sec, lon_ref = gps_lon
-        exif_dict["GPS"][piexif.GPSIFD.GPSLatitudeRef] = lat_ref.encode("ascii")
-        exif_dict["GPS"][piexif.GPSIFD.GPSLongitudeRef] = lon_ref.encode("ascii")
-        exif_dict["GPS"][piexif.GPSIFD.GPSLatitude] = [
-            (lat_deg, 1),
-            (lat_min, 1),
-            _to_rational(lat_sec),
-        ]
-        exif_dict["GPS"][piexif.GPSIFD.GPSLongitude] = [
-            (lon_deg, 1),
-            (lon_min, 1),
-            _to_rational(lon_sec),
-        ]
+    if lat_dd is not None and lon_dd is not None:
+        lat_deg, lat_min, lat_sec = decimal_to_dms_abs(lat_dd)
+        lon_deg, lon_min, lon_sec = decimal_to_dms_abs(lon_dd)
+        exif_dict["GPS"][piexif.GPSIFD.GPSLatitudeRef] = lat_ref(lat_dd).encode("ascii")
+        exif_dict["GPS"][piexif.GPSIFD.GPSLatitude] = dms_to_rational(lat_deg, lat_min, lat_sec)
+        exif_dict["GPS"][piexif.GPSIFD.GPSLongitudeRef] = lon_ref(lon_dd).encode("ascii")
+        exif_dict["GPS"][piexif.GPSIFD.GPSLongitude] = dms_to_rational(lon_deg, lon_min, lon_sec)
     elif location:
         exif_dict["GPS"][piexif.GPSIFD.GPSAreaInformation] = location.encode("utf-8", errors="replace")
 
@@ -271,6 +432,9 @@ class App(tk.Tk):
         self.var_date = tk.StringVar(value="")
         self.var_time = tk.StringVar(value="12:00")
         self.var_film = tk.StringVar(value="")
+        self.var_lat_dd = tk.StringVar(value="")
+        self.var_lon_dd = tk.StringVar(value="")
+        self.var_gps_preview = tk.StringVar(value="")
         self.var_lat_deg = tk.StringVar(value="")
         self.var_lat_min = tk.StringVar(value="")
         self.var_lat_sec = tk.StringVar(value="")
@@ -291,6 +455,8 @@ class App(tk.Tk):
         self.font_path: str | None = None
         self.var_font_label = tk.StringVar(value="(미지정)")
         self.var_continue_on_error = tk.BooleanVar(value=False)
+        self._map_queue: mp.Queue | None = None
+        self._map_proc: mp.Process | None = None
 
         self._build_ui()
         self._load_default_camera_profile()
@@ -386,8 +552,30 @@ class App(tk.Tk):
             state="readonly",
         ).pack(side=tk.LEFT)
 
+        ttk.Label(form, text="소수점 좌표 (Decimal)").grid(row=5, column=0, sticky="w", pady=(10, 0))
+        decimal_frame = ttk.Frame(form)
+        decimal_frame.grid(row=5, column=1, sticky="w", padx=8, pady=(10, 0))
+        ttk.Label(decimal_frame, text="위도").pack(side=tk.LEFT)
+        ttk.Entry(decimal_frame, width=12, textvariable=self.var_lat_dd).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Label(decimal_frame, text="경도").pack(side=tk.LEFT)
+        ttk.Entry(decimal_frame, width=12, textvariable=self.var_lon_dd).pack(side=tk.LEFT, padx=(4, 10))
+        ttk.Button(decimal_frame, text="클립보드 붙여넣기", command=self._paste_decimal_coords).pack(
+            side=tk.LEFT
+        )
+        ttk.Button(decimal_frame, text="지도에서 불러오기", command=self._open_map_picker).pack(
+            side=tk.LEFT, padx=(8, 0)
+        )
+
+        ttk.Label(form, textvariable=self.var_gps_preview).grid(
+            row=6,
+            column=1,
+            columnspan=2,
+            sticky="w",
+            padx=8,
+        )
+
         ttk.Button(form, text="선택 항목에 좌표 적용", command=self._apply_gps).grid(
-            row=3,
+            row=5,
             column=2,
             sticky="w",
             padx=(0, 4),
@@ -558,6 +746,7 @@ class App(tk.Tk):
         selected_dates = []
         selected_lat = []
         selected_lon = []
+        selected_decimal = []
         for index in selected_indices:
             selected_dates.append(self.items[index].assigned_date)
             selected_lat.append(
@@ -576,6 +765,7 @@ class App(tk.Tk):
                     self.items[index].lon_ref,
                 )
             )
+            selected_decimal.append((self.items[index].lat_dd, self.items[index].lon_dd))
         first = selected_dates[0]
         if all(date_value == first for date_value in selected_dates) and first is not None:
             self.var_date.set(first.strftime("%Y-%m-%d"))
@@ -587,6 +777,10 @@ class App(tk.Tk):
         if all(lon_value == lon_first for lon_value in selected_lon):
             if any(value is not None for value in lon_first[:3]):
                 self._set_lon_fields(lon_first)
+        decimal_first = selected_decimal[0]
+        if all(decimal_value == decimal_first for decimal_value in selected_decimal):
+            if decimal_first[0] is not None and decimal_first[1] is not None:
+                self._set_decimal_fields(decimal_first[0], decimal_first[1])
 
     def _apply_date(self):
         selected_indices = list(self.listbox.curselection())
@@ -614,23 +808,48 @@ class App(tk.Tk):
             messagebox.showwarning("안내", "왼쪽 목록에서 파일을 선택하세요.")
             return
 
-        try:
-            lat_deg, lat_min, lat_sec, lat_ref = self._parse_lat_fields()
-            lon_deg, lon_min, lon_sec, lon_ref = self._parse_lon_fields()
-        except ValueError as exc:
-            messagebox.showerror("오류", f"좌표 입력 오류: {exc}")
+        source = self._get_gps_input_source()
+        if source == "none":
+            messagebox.showwarning("안내", "소수점 좌표 또는 DMS 좌표를 입력하세요.")
             return
+
+        if source == "decimal":
+            try:
+                lat_dd, lon_dd = self._parse_decimal_fields()
+            except ValueError as exc:
+                messagebox.showerror("오류", f"Decimal 좌표 입력 오류: {exc}")
+                return
+            lat_deg, lat_min, lat_sec = decimal_to_dms_abs(lat_dd)
+            lon_deg, lon_min, lon_sec = decimal_to_dms_abs(lon_dd)
+            lat_ref_value = lat_ref(lat_dd)
+            lon_ref_value = lon_ref(lon_dd)
+            self._set_lat_fields((lat_deg, lat_min, lat_sec, lat_ref_value))
+            self._set_lon_fields((lon_deg, lon_min, lon_sec, lon_ref_value))
+            self._update_gps_preview(lat_dd, lon_dd)
+        else:
+            try:
+                lat_deg, lat_min, lat_sec, lat_ref_value = self._parse_lat_fields()
+                lon_deg, lon_min, lon_sec, lon_ref_value = self._parse_lon_fields()
+            except ValueError as exc:
+                messagebox.showerror("오류", f"좌표 입력 오류: {exc}")
+                return
+            lat_dd = self._decimal_from_dms(lat_deg, lat_min, lat_sec, lat_ref_value)
+            lon_dd = self._decimal_from_dms(lon_deg, lon_min, lon_sec, lon_ref_value)
+            self._set_decimal_fields(lat_dd, lon_dd)
+            self._update_gps_preview(lat_dd, lon_dd)
 
         for index in selected_indices:
             item = self.items[index]
+            item.lat_dd = lat_dd
+            item.lon_dd = lon_dd
             item.lat_deg = lat_deg
             item.lat_min = lat_min
             item.lat_sec = lat_sec
-            item.lat_ref = lat_ref
+            item.lat_ref = lat_ref_value
             item.lon_deg = lon_deg
             item.lon_min = lon_min
             item.lon_sec = lon_sec
-            item.lon_ref = lon_ref
+            item.lon_ref = lon_ref_value
         self._refresh_list()
         self.listbox.selection_clear(0, tk.END)
         for index in selected_indices:
@@ -655,6 +874,11 @@ class App(tk.Tk):
         if lon_ref:
             self.var_lon_ref.set(lon_ref)
 
+    def _set_decimal_fields(self, lat_dd: float, lon_dd: float) -> None:
+        self.var_lat_dd.set(str(lat_dd))
+        self.var_lon_dd.set(str(lon_dd))
+        self._update_gps_preview(lat_dd, lon_dd)
+
     def _parse_lat_fields(self) -> tuple[int, int, float, str]:
         lat_ref = self.var_lat_ref.get().strip().upper() or "N"
         if lat_ref not in ("N", "S"):
@@ -674,6 +898,126 @@ class App(tk.Tk):
         lon_sec = self._require_float(self.var_lon_sec.get(), "경도 초")
         self._validate_dms(lon_deg, lon_min, lon_sec, is_lat=False)
         return lon_deg, lon_min, lon_sec, lon_ref
+
+    def _parse_decimal_fields(self) -> tuple[float, float]:
+        lat_text = self.var_lat_dd.get().strip()
+        lon_text = self.var_lon_dd.get().strip()
+        if not lat_text or not lon_text:
+            raise ValueError("소수점 좌표가 비어 있습니다.")
+        lat_value = float(lat_text)
+        lon_value = float(lon_text)
+        if not (-90.0 <= lat_value <= 90.0):
+            raise ValueError("위도 범위 오류(-90~90)")
+        if not (-180.0 <= lon_value <= 180.0):
+            raise ValueError("경도 범위 오류(-180~180)")
+        return lat_value, lon_value
+
+    def _decimal_filled(self) -> bool:
+        return bool(self.var_lat_dd.get().strip()) and bool(self.var_lon_dd.get().strip())
+
+    def _dms_filled(self) -> bool:
+        return all(
+            value.strip()
+            for value in (
+                self.var_lat_deg.get(),
+                self.var_lat_min.get(),
+                self.var_lat_sec.get(),
+                self.var_lon_deg.get(),
+                self.var_lon_min.get(),
+                self.var_lon_sec.get(),
+            )
+        )
+
+    def _get_gps_input_source(self) -> str:
+        has_decimal = self._decimal_filled()
+        has_dms = self._dms_filled()
+        if has_decimal and has_dms:
+            messagebox.showwarning(
+                "안내",
+                "소수점 좌표와 DMS 좌표가 모두 입력되어 있어 소수점 좌표를 우선 적용합니다.",
+            )
+            return "decimal"
+        if has_decimal:
+            return "decimal"
+        if has_dms:
+            return "dms"
+        return "none"
+
+    def _decimal_from_dms(self, deg: int, minute: int, sec: float, ref: str) -> float:
+        value = deg + minute / 60.0 + sec / 3600.0
+        if ref in ("S", "W"):
+            value *= -1
+        return value
+
+    def _update_gps_preview(self, lat_dd: float, lon_dd: float) -> None:
+        lat_deg, lat_min, lat_sec = decimal_to_dms_abs(lat_dd)
+        lon_deg, lon_min, lon_sec = decimal_to_dms_abs(lon_dd)
+        preview = (
+            f"위도: {format_dms(lat_deg, lat_min, lat_sec, lat_ref(lat_dd))} / "
+            f"경도: {format_dms(lon_deg, lon_min, lon_sec, lon_ref(lon_dd))}"
+        )
+        self.var_gps_preview.set(preview)
+
+    def _paste_decimal_coords(self):
+        try:
+            txt = self.clipboard_get()
+            lat_value, lon_value = parse_decimal_latlon(txt)
+            self.var_lat_dd.set(str(lat_value))
+            self.var_lon_dd.set(str(lon_value))
+            self._update_gps_preview(lat_value, lon_value)
+        except Exception as exc:
+            messagebox.showerror("오류", f"클립보드 좌표 파싱 실패: {exc}")
+
+    def _open_map_picker(self):
+        if self._map_proc is not None and self._map_proc.is_alive():
+            messagebox.showwarning("안내", "지도 창이 이미 열려 있습니다.")
+            return
+        init_lat = None
+        init_lon = None
+        try:
+            if self.var_lat_dd.get().strip() and self.var_lon_dd.get().strip():
+                init_lat = float(self.var_lat_dd.get().strip())
+                init_lon = float(self.var_lon_dd.get().strip())
+                if not (-90.0 <= init_lat <= 90.0):
+                    raise ValueError
+                if not (-180.0 <= init_lon <= 180.0):
+                    raise ValueError
+        except Exception:
+            init_lat = None
+            init_lon = None
+        ctx = mp.get_context("spawn")
+        self._map_queue = ctx.Queue()
+        self._map_proc = ctx.Process(
+            target=run_map_picker,
+            args=(self._map_queue, init_lat, init_lon),
+            daemon=True,
+        )
+        self._map_proc.start()
+        self.after(200, self._poll_map_picker_queue)
+
+    def _poll_map_picker_queue(self):
+        if self._map_queue is None or self._map_proc is None:
+            return
+        try:
+            lat_value, lon_value = self._map_queue.get_nowait()
+            self.var_lat_dd.set(f"{lat_value:.6f}")
+            self.var_lon_dd.set(f"{lon_value:.6f}")
+            self._update_gps_preview(lat_value, lon_value)
+            try:
+                if self._map_proc.is_alive():
+                    self._map_proc.join(timeout=0.2)
+            except Exception:
+                pass
+            self._map_queue = None
+            self._map_proc = None
+            return
+        except queue.Empty:
+            pass
+        if not self._map_proc.is_alive():
+            self._map_queue = None
+            self._map_proc = None
+            return
+        self.after(200, self._poll_map_picker_queue)
 
     @staticmethod
     def _require_int(value: str, label: str) -> int:
@@ -929,6 +1273,8 @@ class App(tk.Tk):
                             item.location,
                             gps_lat,
                             gps_lon,
+                            item.lat_dd,
+                            item.lon_dd,
                         )
                         piexif.insert(exif_bytes, item.path, out_path)
                     else:
@@ -959,6 +1305,8 @@ class App(tk.Tk):
                                 item.location,
                                 gps_lat,
                                 gps_lon,
+                                item.lat_dd,
+                                item.lon_dd,
                             )
                             if did_orient:
                                 exif_dict = piexif.load(new_exif)
