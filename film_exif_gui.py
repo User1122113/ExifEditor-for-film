@@ -18,7 +18,7 @@ from datetime import date, datetime, time, timedelta
 from math import floor
 from pathlib import Path
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, ttk, font as tkfont
 
 # (Prompt 2에서 실제로 사용)
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont, ImageOps, ImageTk  # noqa: F401
@@ -35,6 +35,42 @@ DEFAULT_OFFSET_X = -20
 DEFAULT_OFFSET_Y = -20
 
 _DEC_RE = re.compile(r"(-?\d+(?:\.\d+)?)")
+
+
+class _Tooltip:
+    def __init__(self, widget: tk.Widget, text: str):
+        self.widget = widget
+        self.text = text
+        self._tip_window: tk.Toplevel | None = None
+        self.widget.bind("<Enter>", self._show)
+        self.widget.bind("<Leave>", self._hide)
+
+    def _show(self, _event=None):
+        if self._tip_window is not None:
+            return
+        x = self.widget.winfo_rootx() + 12
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
+        tip = tk.Toplevel(self.widget)
+        tip.wm_overrideredirect(True)
+        tip.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(
+            tip,
+            text=self.text,
+            justify="left",
+            background="#ffffe0",
+            relief="solid",
+            borderwidth=1,
+            padx=6,
+            pady=4,
+        )
+        label.pack()
+        self._tip_window = tip
+
+    def _hide(self, _event=None):
+        if self._tip_window is None:
+            return
+        self._tip_window.destroy()
+        self._tip_window = None
 
 # --- Map Picker (pywebview + Leaflet) ---
 MAP_PICKER_HTML = r"""
@@ -424,7 +460,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Film EXIF Writer")
-        self.geometry("1020x600")
+        self.geometry("1000x680")
+        self.minsize(1000, 680)
 
         self.items: list[FileItem] = []
         self.out_dir: str | None = None
@@ -453,8 +490,7 @@ class App(tk.Tk):
         self.var_offset_y = tk.IntVar(value=-20)
 
         self.font_path: str | None = None
-        self.var_font_label = tk.StringVar(value="(미지정)")
-        self.var_continue_on_error = tk.BooleanVar(value=False)
+        self.var_font_label = tk.StringVar(value="E1234.ttf")
         self._map_queue: mp.Queue | None = None
         self._map_proc: mp.Process | None = None
 
@@ -466,7 +502,7 @@ class App(tk.Tk):
         paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
         # Left panel
-        left = ttk.Frame(paned)
+        left = ttk.Frame(paned, width=330)
         paned.add(left, weight=1)
 
         self.listbox = tk.Listbox(left, selectmode=tk.EXTENDED, exportselection=False)
@@ -481,117 +517,81 @@ class App(tk.Tk):
         ttk.Button(btns, text="모두 제거", command=self._remove_all).pack(side=tk.LEFT, padx=(8, 0))
 
         # Right panel
-        right = ttk.Frame(paned)
+        right = ttk.Frame(paned, width=840)
         paned.add(right, weight=2)
+        self.after_idle(lambda: paned.sashpos(0, 330))
 
         form = ttk.Frame(right)
         form.pack(fill=tk.X)
 
+        form.columnconfigure(1, weight=1)
+        form.columnconfigure(2, weight=0)
+
         ttk.Label(form, text="선택 항목 날짜 (YYYY-MM-DD)").grid(row=0, column=0, sticky="w")
         ttk.Entry(form, textvariable=self.var_date, width=20).grid(row=0, column=1, sticky="w", padx=8)
-        ttk.Button(form, text="선택 항목에 날짜 적용", command=self._apply_date).grid(row=0, column=2, sticky="w")
 
         ttk.Label(form, text="기준 시작 시간 (HH:MM)").grid(row=1, column=0, sticky="w", pady=(10, 0))
-        ttk.Entry(form, textvariable=self.var_time, width=20).grid(
-            row=1,
-            column=1,
-            sticky="w",
-            padx=8,
-            pady=(10, 0),
-        )
+        time_apply = ttk.Frame(form)
+        time_apply.grid(row=1, column=1, columnspan=2, sticky="w", padx=8, pady=(10, 0))
+        ttk.Entry(time_apply, textvariable=self.var_time, width=20).pack(side=tk.LEFT)
 
-        ttk.Label(form, text="필름 정보").grid(row=2, column=0, sticky="w", pady=(10, 0))
-        ttk.Entry(form, textvariable=self.var_film, width=54).grid(
-            row=2,
-            column=1,
-            columnspan=2,
-            sticky="we",
-            padx=8,
-            pady=(10, 0),
-        )
-
-        ttk.Label(form, text="위도 (φ) D/M/S").grid(row=3, column=0, sticky="w", pady=(10, 0))
-        lat_frame = ttk.Frame(form)
-        lat_frame.grid(row=3, column=1, sticky="w", padx=8, pady=(10, 0))
-        tk.Spinbox(lat_frame, from_=0, to=90, width=5, textvariable=self.var_lat_deg).pack(
-            side=tk.LEFT
-        )
-        ttk.Label(lat_frame, text="°").pack(side=tk.LEFT, padx=(2, 6))
-        tk.Spinbox(lat_frame, from_=0, to=59, width=5, textvariable=self.var_lat_min).pack(
-            side=tk.LEFT
-        )
-        ttk.Label(lat_frame, text="′").pack(side=tk.LEFT, padx=(2, 6))
-        ttk.Entry(lat_frame, width=8, textvariable=self.var_lat_sec).pack(side=tk.LEFT)
-        ttk.Label(lat_frame, text="″").pack(side=tk.LEFT, padx=(2, 6))
-        ttk.Combobox(
-            lat_frame,
-            width=3,
-            textvariable=self.var_lat_ref,
-            values=["N", "S"],
-            state="readonly",
-        ).pack(side=tk.LEFT)
-
-        ttk.Label(form, text="경도 (λ) D/M/S").grid(row=4, column=0, sticky="w", pady=(10, 0))
-        lon_frame = ttk.Frame(form)
-        lon_frame.grid(row=4, column=1, sticky="w", padx=8, pady=(10, 0))
-        tk.Spinbox(lon_frame, from_=0, to=180, width=5, textvariable=self.var_lon_deg).pack(
-            side=tk.LEFT
-        )
-        ttk.Label(lon_frame, text="°").pack(side=tk.LEFT, padx=(2, 6))
-        tk.Spinbox(lon_frame, from_=0, to=59, width=5, textvariable=self.var_lon_min).pack(
-            side=tk.LEFT
-        )
-        ttk.Label(lon_frame, text="′").pack(side=tk.LEFT, padx=(2, 6))
-        ttk.Entry(lon_frame, width=8, textvariable=self.var_lon_sec).pack(side=tk.LEFT)
-        ttk.Label(lon_frame, text="″").pack(side=tk.LEFT, padx=(2, 6))
-        ttk.Combobox(
-            lon_frame,
-            width=3,
-            textvariable=self.var_lon_ref,
-            values=["E", "W"],
-            state="readonly",
-        ).pack(side=tk.LEFT)
-
-        ttk.Label(form, text="소수점 좌표 (Decimal)").grid(row=5, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(form, text="위치 좌표").grid(row=3, column=0, sticky="w", pady=(10, 0))
         decimal_frame = ttk.Frame(form)
-        decimal_frame.grid(row=5, column=1, sticky="w", padx=8, pady=(10, 0))
+        decimal_frame.grid(row=3, column=1, sticky="w", padx=8, pady=(10, 0))
         ttk.Label(decimal_frame, text="위도").pack(side=tk.LEFT)
         ttk.Entry(decimal_frame, width=12, textvariable=self.var_lat_dd).pack(side=tk.LEFT, padx=(4, 10))
         ttk.Label(decimal_frame, text="경도").pack(side=tk.LEFT)
         ttk.Entry(decimal_frame, width=12, textvariable=self.var_lon_dd).pack(side=tk.LEFT, padx=(4, 10))
-        ttk.Button(decimal_frame, text="클립보드 붙여넣기", command=self._paste_decimal_coords).pack(
-            side=tk.LEFT
-        )
+        btn_paste = ttk.Button(decimal_frame, text="클립보드 붙여넣기", command=self._paste_decimal_coords)
+        btn_paste.pack(side=tk.LEFT)
+        _Tooltip(btn_paste, "구글지도 원하는 위치 우클릭 \n- 이 위치 공유 - 좌표값 복사 후 이 버튼 클릭")
         ttk.Button(decimal_frame, text="지도에서 불러오기", command=self._open_map_picker).pack(
             side=tk.LEFT, padx=(8, 0)
         )
 
-        ttk.Label(form, textvariable=self.var_gps_preview).grid(
-            row=6,
+        gps_apply_row = ttk.Frame(form)
+        gps_apply_row.grid(
+            row=4,
             column=1,
             columnspan=2,
             sticky="w",
             padx=8,
+            pady=(6, 0),
         )
+        ttk.Label(gps_apply_row, textvariable=self.var_gps_preview).pack(side=tk.LEFT)
 
-        ttk.Button(form, text="선택 항목에 좌표 적용", command=self._apply_gps).grid(
-            row=5,
-            column=2,
-            sticky="w",
-            padx=(0, 4),
-            pady=(10, 0),
+        apply_row = ttk.Frame(form)
+        apply_row.grid(row=5, column=0, columnspan=2, sticky="ew", padx=8, pady=(10, 0))
+        apply_font = tkfont.nametofont("TkDefaultFont").copy()
+        apply_font.configure(size=int(apply_font.cget("size") * 1.5))
+        ttk.Style().configure("Apply.TButton", font=apply_font)
+        ttk.Button(
+            apply_row,
+            text="선택된 사진에 날짜/위치정보 적용",
+            command=self._apply_selected,
+            style="Apply.TButton",
+        ).pack(
+            fill=tk.X,
+            ipadx=12,
+            ipady=8,
         )
 
         cam_prof = ttk.Frame(right)
         cam_prof.pack(fill=tk.X, pady=(12, 0))
-        ttk.Label(cam_prof, text="카메라 기종").pack(side=tk.LEFT)
+        profile_label_width = 10
+        ttk.Label(cam_prof, text="카메라 기종", width=profile_label_width, anchor="w").pack(side=tk.LEFT)
         ttk.Entry(cam_prof, textvariable=self.var_camera_model, width=20).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Label(cam_prof, text="렌즈").pack(side=tk.LEFT)
         ttk.Entry(cam_prof, textvariable=self.var_lens, width=20).pack(side=tk.LEFT, padx=(6, 12))
-        ttk.Button(cam_prof, text="내보내기", command=self._export_camera_profile).pack(
+
+        film_row = ttk.Frame(right)
+        film_row.pack(fill=tk.X, pady=(10, 0))
+        ttk.Label(film_row, text="필름 정보", width=profile_label_width, anchor="w").pack(side=tk.LEFT)
+        ttk.Entry(film_row, textvariable=self.var_film, width=20).pack(side=tk.LEFT, padx=(6, 12))
+        ttk.Button(film_row, text="내보내기", command=self._export_camera_profile).pack(
             side=tk.LEFT, padx=(6, 0)
         )
-        ttk.Button(cam_prof, text="불러오기", command=self._import_camera_profile).pack(
+        ttk.Button(film_row, text="불러오기", command=self._import_camera_profile).pack(
             side=tk.LEFT, padx=(6, 0)
         )
 
@@ -668,14 +668,12 @@ class App(tk.Tk):
 
         font_row = ttk.Frame(self.stamp_opt_container)
         font_row.pack(fill=tk.X, pady=(12, 0))
-        ttk.Button(font_row, text="폰트 파일 선택(선택)", command=self._choose_font).pack(side=tk.LEFT)
-        ttk.Label(font_row, textvariable=self.var_font_label).pack(side=tk.LEFT, padx=10)
-
-        ttk.Checkbutton(
-            right,
-            text="오류 발생 시 무시하고 계속(선택)",
-            variable=self.var_continue_on_error,
-        ).pack(anchor="w", pady=(10, 0))
+        ttk.Button(font_row, text="폰트 파일 선택", command=self._choose_font).pack(side=tk.LEFT)
+        try:
+            font_label_font = tkfont.Font(file=DEFAULT_FONT_PATH, size=12)
+        except Exception:
+            font_label_font = None
+        ttk.Label(font_row, textvariable=self.var_font_label, font=font_label_font).pack(side=tk.LEFT, padx=10)
 
         self.run_row = ttk.Frame(right)
         self.run_row.pack(fill=tk.X, pady=(18, 0))
@@ -696,12 +694,18 @@ class App(tk.Tk):
 
     def _format_item_label(self, item: FileItem) -> str:
         filename = os.path.basename(item.path)
-        if item.assigned_date is None:
-            date_text = "미지정"
+        has_date = item.assigned_date is not None
+        has_coords = item.lat_dd is not None and item.lon_dd is not None
+        if has_date and has_coords:
+            tag_text = f"{item.assigned_date.strftime('%Y-%m-%d')}, 좌표 적용됨"
+        elif has_date:
+            tag_text = item.assigned_date.strftime("%Y-%m-%d")
+        elif has_coords:
+            tag_text = "좌표 적용됨"
         else:
-            date_text = item.assigned_date.strftime("%Y-%m-%d")
+            tag_text = "미지정"
         location_text = f" / {item.location}" if item.location else ""
-        return f"{filename}   [{date_text}]{location_text}"
+        return f"{filename}   [{tag_text}]{location_text}"
 
     def _refresh_list(self):
         self.listbox.delete(0, tk.END)
@@ -744,112 +748,87 @@ class App(tk.Tk):
         if not selected_indices:
             return
         selected_dates = []
-        selected_lat = []
-        selected_lon = []
         selected_decimal = []
         for index in selected_indices:
             selected_dates.append(self.items[index].assigned_date)
-            selected_lat.append(
-                (
-                    self.items[index].lat_deg,
-                    self.items[index].lat_min,
-                    self.items[index].lat_sec,
-                    self.items[index].lat_ref,
-                )
-            )
-            selected_lon.append(
-                (
-                    self.items[index].lon_deg,
-                    self.items[index].lon_min,
-                    self.items[index].lon_sec,
-                    self.items[index].lon_ref,
-                )
-            )
             selected_decimal.append((self.items[index].lat_dd, self.items[index].lon_dd))
         first = selected_dates[0]
         if all(date_value == first for date_value in selected_dates) and first is not None:
             self.var_date.set(first.strftime("%Y-%m-%d"))
-        lat_first = selected_lat[0]
-        if all(lat_value == lat_first for lat_value in selected_lat):
-            if any(value is not None for value in lat_first[:3]):
-                self._set_lat_fields(lat_first)
-        lon_first = selected_lon[0]
-        if all(lon_value == lon_first for lon_value in selected_lon):
-            if any(value is not None for value in lon_first[:3]):
-                self._set_lon_fields(lon_first)
         decimal_first = selected_decimal[0]
         if all(decimal_value == decimal_first for decimal_value in selected_decimal):
             if decimal_first[0] is not None and decimal_first[1] is not None:
                 self._set_decimal_fields(decimal_first[0], decimal_first[1])
 
-    def _apply_date(self):
-        selected_indices = list(self.listbox.curselection())
-        if not selected_indices:
-            messagebox.showwarning("안내", "왼쪽 목록에서 파일을 선택하세요.")
-            return
-        try:
-            new_date = parse_date_yyyy_mm_dd(self.var_date.get())
-        except ValueError:
-            messagebox.showerror("오류", "날짜 형식이 올바르지 않습니다. 예: 2020-01-02")
-            return
-        for index in selected_indices:
-            self.items[index].assigned_date = new_date
-        self._refresh_list()
-        self.listbox.selection_clear(0, tk.END)
-        for index in selected_indices:
-            self.listbox.select_set(index)
-        if selected_indices:
-            self.listbox.activate(selected_indices[0])
-            self.listbox.see(selected_indices[0])
-
-    def _apply_gps(self):
+    def _apply_selected(self):
         selected_indices = list(self.listbox.curselection())
         if not selected_indices:
             messagebox.showwarning("안내", "왼쪽 목록에서 파일을 선택하세요.")
             return
 
-        source = self._get_gps_input_source()
-        if source == "none":
-            messagebox.showwarning("안내", "소수점 좌표 또는 DMS 좌표를 입력하세요.")
-            return
-
-        if source == "decimal":
+        date_text = self.var_date.get().strip()
+        new_date = None
+        if date_text:
             try:
-                lat_dd, lon_dd = self._parse_decimal_fields()
-            except ValueError as exc:
-                messagebox.showerror("오류", f"Decimal 좌표 입력 오류: {exc}")
+                new_date = parse_date_yyyy_mm_dd(date_text)
+            except ValueError:
+                messagebox.showerror("오류", "날짜 형식이 올바르지 않습니다. 예: 2020-01-02")
                 return
+
+        lat_text = self.var_lat_dd.get().strip()
+        lon_text = self.var_lon_dd.get().strip()
+        lat_dd = None
+        lon_dd = None
+        if lat_text or lon_text:
+            if not (lat_text and lon_text):
+                messagebox.showerror("오류", "좌표를 적용하려면 위도/경도를 모두 입력해야 합니다.")
+                return
+            try:
+                lat_dd = float(lat_text)
+                lon_dd = float(lon_text)
+            except ValueError:
+                messagebox.showerror(
+                    "오류",
+                    "좌표는 소수(float) 형태로 입력해야 합니다. 예: 37.206935, 127.096444",
+                )
+                return
+            if not (-90.0 <= lat_dd <= 90.0):
+                messagebox.showerror("오류", "위도 범위 오류(-90~90)")
+                return
+            if not (-180.0 <= lon_dd <= 180.0):
+                messagebox.showerror("오류", "경도 범위 오류(-180~180)")
+                return
+
+        if new_date is None and lat_dd is None:
+            messagebox.showwarning(
+                "안내",
+                "적용할 날짜 또는 좌표를 입력하세요. (비어있음은 적용되지 않습니다)",
+            )
+            return
+
+        if new_date is not None:
+            for index in selected_indices:
+                self.items[index].assigned_date = new_date
+
+        if lat_dd is not None and lon_dd is not None:
             lat_deg, lat_min, lat_sec = decimal_to_dms_abs(lat_dd)
             lon_deg, lon_min, lon_sec = decimal_to_dms_abs(lon_dd)
             lat_ref_value = lat_ref(lat_dd)
             lon_ref_value = lon_ref(lon_dd)
-            self._set_lat_fields((lat_deg, lat_min, lat_sec, lat_ref_value))
-            self._set_lon_fields((lon_deg, lon_min, lon_sec, lon_ref_value))
             self._update_gps_preview(lat_dd, lon_dd)
-        else:
-            try:
-                lat_deg, lat_min, lat_sec, lat_ref_value = self._parse_lat_fields()
-                lon_deg, lon_min, lon_sec, lon_ref_value = self._parse_lon_fields()
-            except ValueError as exc:
-                messagebox.showerror("오류", f"좌표 입력 오류: {exc}")
-                return
-            lat_dd = self._decimal_from_dms(lat_deg, lat_min, lat_sec, lat_ref_value)
-            lon_dd = self._decimal_from_dms(lon_deg, lon_min, lon_sec, lon_ref_value)
-            self._set_decimal_fields(lat_dd, lon_dd)
-            self._update_gps_preview(lat_dd, lon_dd)
+            for index in selected_indices:
+                item = self.items[index]
+                item.lat_dd = lat_dd
+                item.lon_dd = lon_dd
+                item.lat_deg = lat_deg
+                item.lat_min = lat_min
+                item.lat_sec = lat_sec
+                item.lat_ref = lat_ref_value
+                item.lon_deg = lon_deg
+                item.lon_min = lon_min
+                item.lon_sec = lon_sec
+                item.lon_ref = lon_ref_value
 
-        for index in selected_indices:
-            item = self.items[index]
-            item.lat_dd = lat_dd
-            item.lon_dd = lon_dd
-            item.lat_deg = lat_deg
-            item.lat_min = lat_min
-            item.lat_sec = lat_sec
-            item.lat_ref = lat_ref_value
-            item.lon_deg = lon_deg
-            item.lon_min = lon_min
-            item.lon_sec = lon_sec
-            item.lon_ref = lon_ref_value
         self._refresh_list()
         self.listbox.selection_clear(0, tk.END)
         for index in selected_indices:
@@ -857,47 +836,11 @@ class App(tk.Tk):
         if selected_indices:
             self.listbox.activate(selected_indices[0])
             self.listbox.see(selected_indices[0])
-
-    def _set_lat_fields(self, values: tuple[int | None, int | None, float | None, str]):
-        lat_deg, lat_min, lat_sec, lat_ref = values
-        self.var_lat_deg.set("" if lat_deg is None else str(lat_deg))
-        self.var_lat_min.set("" if lat_min is None else str(lat_min))
-        self.var_lat_sec.set("" if lat_sec is None else str(lat_sec))
-        if lat_ref:
-            self.var_lat_ref.set(lat_ref)
-
-    def _set_lon_fields(self, values: tuple[int | None, int | None, float | None, str]):
-        lon_deg, lon_min, lon_sec, lon_ref = values
-        self.var_lon_deg.set("" if lon_deg is None else str(lon_deg))
-        self.var_lon_min.set("" if lon_min is None else str(lon_min))
-        self.var_lon_sec.set("" if lon_sec is None else str(lon_sec))
-        if lon_ref:
-            self.var_lon_ref.set(lon_ref)
 
     def _set_decimal_fields(self, lat_dd: float, lon_dd: float) -> None:
         self.var_lat_dd.set(str(lat_dd))
         self.var_lon_dd.set(str(lon_dd))
         self._update_gps_preview(lat_dd, lon_dd)
-
-    def _parse_lat_fields(self) -> tuple[int, int, float, str]:
-        lat_ref = self.var_lat_ref.get().strip().upper() or "N"
-        if lat_ref not in ("N", "S"):
-            raise ValueError("위도 방향은 N 또는 S여야 합니다.")
-        lat_deg = self._require_int(self.var_lat_deg.get(), "위도 도")
-        lat_min = self._require_int(self.var_lat_min.get(), "위도 분")
-        lat_sec = self._require_float(self.var_lat_sec.get(), "위도 초")
-        self._validate_dms(lat_deg, lat_min, lat_sec, is_lat=True)
-        return lat_deg, lat_min, lat_sec, lat_ref
-
-    def _parse_lon_fields(self) -> tuple[int, int, float, str]:
-        lon_ref = self.var_lon_ref.get().strip().upper() or "E"
-        if lon_ref not in ("E", "W"):
-            raise ValueError("경도 방향은 E 또는 W여야 합니다.")
-        lon_deg = self._require_int(self.var_lon_deg.get(), "경도 도")
-        lon_min = self._require_int(self.var_lon_min.get(), "경도 분")
-        lon_sec = self._require_float(self.var_lon_sec.get(), "경도 초")
-        self._validate_dms(lon_deg, lon_min, lon_sec, is_lat=False)
-        return lon_deg, lon_min, lon_sec, lon_ref
 
     def _parse_decimal_fields(self) -> tuple[float, float]:
         lat_text = self.var_lat_dd.get().strip()
@@ -915,39 +858,8 @@ class App(tk.Tk):
     def _decimal_filled(self) -> bool:
         return bool(self.var_lat_dd.get().strip()) and bool(self.var_lon_dd.get().strip())
 
-    def _dms_filled(self) -> bool:
-        return all(
-            value.strip()
-            for value in (
-                self.var_lat_deg.get(),
-                self.var_lat_min.get(),
-                self.var_lat_sec.get(),
-                self.var_lon_deg.get(),
-                self.var_lon_min.get(),
-                self.var_lon_sec.get(),
-            )
-        )
-
     def _get_gps_input_source(self) -> str:
-        has_decimal = self._decimal_filled()
-        has_dms = self._dms_filled()
-        if has_decimal and has_dms:
-            messagebox.showwarning(
-                "안내",
-                "소수점 좌표와 DMS 좌표가 모두 입력되어 있어 소수점 좌표를 우선 적용합니다.",
-            )
-            return "decimal"
-        if has_decimal:
-            return "decimal"
-        if has_dms:
-            return "dms"
-        return "none"
-
-    def _decimal_from_dms(self, deg: int, minute: int, sec: float, ref: str) -> float:
-        value = deg + minute / 60.0 + sec / 3600.0
-        if ref in ("S", "W"):
-            value *= -1
-        return value
+        return "decimal" if self._decimal_filled() else "none"
 
     def _update_gps_preview(self, lat_dd: float, lon_dd: float) -> None:
         lat_deg, lat_min, lat_sec = decimal_to_dms_abs(lat_dd)
@@ -1019,40 +931,12 @@ class App(tk.Tk):
             return
         self.after(200, self._poll_map_picker_queue)
 
-    @staticmethod
-    def _require_int(value: str, label: str) -> int:
-        value = value.strip()
-        if value == "":
-            raise ValueError(f"{label} 값이 비어 있습니다.")
-        try:
-            return int(value)
-        except ValueError as exc:
-            raise ValueError(f"{label} 값이 숫자가 아닙니다.") from exc
-
-    @staticmethod
-    def _require_float(value: str, label: str) -> float:
-        value = value.strip()
-        if value == "":
-            raise ValueError(f"{label} 값이 비어 있습니다.")
-        try:
-            return float(value)
-        except ValueError as exc:
-            raise ValueError(f"{label} 값이 숫자가 아닙니다.") from exc
-
-    @staticmethod
-    def _validate_dms(deg: int, minute: int, second: float, is_lat: bool) -> None:
-        max_deg = 90 if is_lat else 180
-        if not (0 <= deg <= max_deg):
-            raise ValueError(f"도 값은 0~{max_deg} 범위여야 합니다.")
-        if not (0 <= minute <= 59):
-            raise ValueError("분 값은 0~59 범위여야 합니다.")
-        if not (0 <= second < 60):
-            raise ValueError("초 값은 0~59.999 범위여야 합니다.")
 
     def _export_camera_profile(self):
         profile = {
             "camera_model": self.var_camera_model.get().strip(),
             "lens": self.var_lens.get().strip(),
+            "film_info": self.var_film.get().strip(),
         }
         profile_dir = Path(__file__).resolve().parent / "Camera Profile"
         profile_dir.mkdir(parents=True, exist_ok=True)
@@ -1078,6 +962,8 @@ class App(tk.Tk):
                 profile = json.load(handle)
             self.var_camera_model.set(profile.get("camera_model", ""))
             self.var_lens.set(profile.get("lens", ""))
+            self.var_film.set(profile.get("film_info", ""))
+            self.var_film.set(profile.get("film_info", ""))
         except Exception as exc:
             messagebox.showerror("오류", f"프로파일 불러오기 실패: {exc}")
 
@@ -1222,7 +1108,6 @@ class App(tk.Tk):
         camera_model = self.var_camera_model.get().strip()
         lens = self.var_lens.get().strip()
         do_stamp = bool(self.var_stamp.get())
-        continue_on_error = bool(self.var_continue_on_error.get())
 
         items_by_date: dict[date | None, list[FileItem]] = {}
         for item in self.items:
@@ -1324,8 +1209,7 @@ class App(tk.Tk):
                     failures += 1
                     messagebox.showerror("오류", f"처리 실패: {basename}\n{exc}")
                     self.lbl_status.config(text="오류 발생")
-                    if not continue_on_error:
-                        return
+                    return
                 processed += 1
                 self.progress.config(value=processed)
                 self.lbl_status.config(text=f"{processed}/{total} 처리 중…")
