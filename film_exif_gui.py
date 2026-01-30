@@ -594,17 +594,20 @@ class App(tk.Tk):
             side=tk.LEFT, padx=(6, 0)
         )
 
-        stamp = ttk.Frame(right)
-        stamp.pack(fill=tk.X, pady=(14, 0))
+        self.stamp_row = ttk.Frame(right)
+        self.stamp_row.pack(fill=tk.X, pady=(14, 0))
         ttk.Checkbutton(
-            stamp,
-            text="우측 하단 날짜 스탬프(픽셀 오버레이)",
+            self.stamp_row,
+            text="우측 하단 날짜 스탬프(선택 시 출력폴더 선택 필수)",
             variable=self.var_stamp,
             command=self._toggle_stamp_options,
         ).pack(side=tk.LEFT)
-        ttk.Label(stamp, text="포맷").pack(side=tk.LEFT, padx=(12, 0))
+
+        self.stamp_fmt_row = ttk.Frame(right)
+        self.stamp_fmt_row.pack(fill=tk.X, pady=(6, 0))
+        ttk.Label(self.stamp_fmt_row, text="스탬프 날짜 형식").pack(side=tk.LEFT)
         ttk.Combobox(
-            stamp,
+            self.stamp_fmt_row,
             textvariable=self.var_stamp_fmt,
             width=12,
             state="readonly",
@@ -677,12 +680,24 @@ class App(tk.Tk):
         self.run_row = ttk.Frame(right)
         self.run_row.pack(fill=tk.X, pady=(18, 0))
         ttk.Button(self.run_row, text="미리보기", command=self._preview).pack(side=tk.LEFT)
-        ttk.Button(self.run_row, text="EXIF 기록 및 저장", command=self._run).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(self.run_row, text="출력 폴더 선택", command=self._choose_out_dir).pack(
             side=tk.LEFT, padx=(8, 0)
         )
         self.lbl_out = ttk.Label(self.run_row, text="(미지정)")
         self.lbl_out.pack(side=tk.LEFT, padx=(8, 0))
+
+        self.run_apply_row = ttk.Frame(right)
+        self.run_apply_row.pack(fill=tk.X, pady=(12, 0))
+        ttk.Button(
+            self.run_apply_row,
+            text="EXIF 기록 및 저장",
+            command=self._run,
+            style="Apply.TButton",
+        ).pack(
+            fill=tk.X,
+            ipadx=12,
+            ipady=8,
+        )
 
         self._toggle_stamp_options()
 
@@ -1010,9 +1025,13 @@ class App(tk.Tk):
 
     def _toggle_stamp_options(self):
         if self.var_stamp.get():
-            self.stamp_opt_container.pack(before=self.run_row, fill=tk.X, pady=(12, 0))
+            self.stamp_fmt_row.pack(after=self.stamp_row, fill=tk.X, pady=(6, 0))
+            self.stamp_opt_container.pack(after=self.stamp_fmt_row, fill=tk.X, pady=(12, 0))
+            self.run_row.pack(after=self.stamp_opt_container, fill=tk.X, pady=(18, 0))
         else:
             self.stamp_opt_container.pack_forget()
+            self.stamp_fmt_row.pack_forget()
+            self.run_row.pack_forget()
 
     def _make_stamp_text(self, dt: datetime) -> str:
         if self.var_stamp_fmt.get() == "YYYY MM DD":
