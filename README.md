@@ -1,4 +1,4 @@
-# Film EXIF Writer (ExifEditor-for-film)
+# Film EXIF Writer
 
 필름 스캔 **JPG** 이미지에 **필름/카메라 정보**, **날짜/시간**, **GPS 좌표**를 **EXIF 메타데이터**로 기록하는 Tkinter GUI 도구입니다.  
 선택적으로 사진 **우측 하단에 날짜 스탬프(픽셀 오버레이)** 를 추가해 **새 파일로 저장**할 수 있습니다.
