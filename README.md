@@ -10,18 +10,19 @@
 ## 빠른 시작 (ZIP 다운로드 기준)
 
 ### 1) ZIP 다운로드 & 압축 해제
-- GitHub에서 **Code → Download ZIP**을 눌러 다운로드 후 압축을 풉니다.
-- 또는 배포 ZIP을 받았다면 원하는 폴더에 압축을 풉니다.
+- 배포 버전의 FilmWriter.zip을 다운받아서 압축해제합니다.
 
-압축 해제 후 폴더 안에 아래 파일이 있어야 합니다.
-- `Film_Writer.py`
-- `requirements.txt`
-- `Film_Writer_icon.ico`
-- (선택) `fonts/`, `Camera Profile/`
+압축 해제 후 폴더 안에 아래 파일 및 폴더가 있어야 합니다.
+- `Film_Writer.exe`
+- `fonts/`
+- `Camera Profile/`
 
 > 처음 실행 시 `fonts/`, `Camera Profile/` 폴더가 없다면 자동 생성됩니다(필요 시 기본 리소스가 seed될 수 있음).
 
-### 2) Python 설치 확인
+
+
+### 2) 소스코드로 직접 실행 방법
+### 2-1) Python 설치 확인
 - Windows: **Python 3.10+** 권장(개발은 Python 3.13 기준)
 - macOS: **python3** 사용 권장
 
@@ -32,8 +33,7 @@ python --version
 python3 --version
 ```
 
-### 3) 가상환경 생성/활성화 & 의존성 설치
-
+### 2-2) 가상환경 생성/활성화 & 의존성 설치
 #### Windows (PowerShell)
 ```powershell
 cd "압축 푼 폴더 경로"
@@ -52,7 +52,7 @@ python -m pip install -U pip
 pip install -r requirements.txt
 ```
 
-### 4) 실행
+### 3) 실행
 ```bash
 python Film_Writer.py
 ```
@@ -137,46 +137,6 @@ python Film_Writer.py
 - pywebview
 
 Windows에서 “지도에서 불러오기(웹뷰)”가 동작하려면 보통 **Microsoft Edge WebView2 Runtime**이 필요할 수 있습니다.
-
----
-
-## (개발자용) Windows 빌드: PyInstaller
-
-### OneFile (권장: 가변 리소스는 외부 폴더로 유지)
-> `fonts/`, `Camera Profile/`은 **내장하지 않습니다.**  
-> 배포 시 `Film_Writer.exe` 옆에 해당 폴더를 같이 두거나, 앱이 처음 실행 시 자동 생성 후 사용자가 채워 넣는 방식으로 운영합니다.
-
-PowerShell:
-```powershell
-python -m PyInstaller `
-  --name "Film_Writer" `
-  --noconfirm `
-  --clean `
-  --onefile `
-  --icon "Film_Writer_icon.ico" `
-  --add-data "Film_Writer_icon.ico;." `
-  --collect-submodules webview `
-  "Film_Writer.py"
-```
-
-결과물:
-- `dist/Film_Writer.exe`
-
-### OneDir (배포 폴더 형태)
-```powershell
-python -m PyInstaller `
-  --name "Film_Writer" `
-  --noconfirm `
-  --clean `
-  --windowed `
-  --icon "Film_Writer_icon.ico" `
-  --add-data "Film_Writer_icon.ico;." `
-  --collect-submodules webview `
-  "Film_Writer.py"
-```
-
-결과물:
-- `dist/Film_Writer/Film_Writer.exe`
 
 ---
 
