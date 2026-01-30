@@ -1,107 +1,199 @@
-# ExifEditor-for-film
+# Film EXIF Writer (ExifEditor-for-film)
 
-필름 스캔 JPG 이미지에 필름 정보, 날짜/시간, GPS 좌표를 EXIF 메타데이터로 기록하고, 필요 시 우측 하단에 날짜 스탬프(픽셀 오버레이)를 추가하는 Tkinter GUI 도구입니다. GUI에서 파일 선택, 날짜/시간 지정, 필름 정보 입력, GPS 좌표 입력, 스탬프 옵션 설정, 출력 폴더 선택까지 한 번에 처리할 수 있습니다.
+필름 스캔 **JPG** 이미지에 **필름/카메라 정보**, **날짜/시간**, **GPS 좌표**를 **EXIF 메타데이터**로 기록하는 Tkinter GUI 도구입니다.  
+선택적으로 사진 **우측 하단에 날짜 스탬프(픽셀 오버레이)** 를 추가해 **새 파일로 저장**할 수 있습니다.
 
-## 주요 기능
+> 실행 파일(.exe/.app)로 배포하더라도 `fonts/`, `Camera Profile/` 폴더는 **사용자가 파일을 자유롭게 추가/삭제/교체**할 수 있도록 앱 옆(또는 앱이 위치한 폴더)에 **외부 폴더로 유지**됩니다.
 
-- 여러 JPG 파일에 날짜/시간(EXIF `DateTime`, `DateTimeOriginal`, `DateTimeDigitized`)을 일괄 기록
-- 필름 정보 저장(EXIF `ImageDescription`, `UserComment`, `XPKeywords`)
-- GPS 좌표 기록(소수점 좌표 입력, EXIF `GPSLatitude/Longitude` 및 `GPSLatitudeRef/LongitudeRef`)
-- 날짜 스탬프(픽셀 오버레이): 포맷 선택(`'YY MM DD`, `YYYY MM DD`), 글자 크기/블러/오프셋 조절
-- 미리보기: 날짜 입력/스탬프 설정과 무관하게 원본 이미지를 미리보기로 표시
-- 카메라 프로파일 내보내기/불러오기 (`Camera Profile` 폴더)
-- EXIF Orientation 처리로 세로 사진도 올바르게 표시
-- 진행 표시(ProgressBar), 오류 처리
+---
 
-## 설치 방법 (Installation)
+## 빠른 시작 (ZIP 다운로드 기준)
 
-### 1) 가상 환경 생성
+### 1) ZIP 다운로드 & 압축 해제
+- GitHub에서 **Code → Download ZIP**을 눌러 다운로드 후 압축을 풉니다.
+- 또는 배포 ZIP을 받았다면 원하는 폴더에 압축을 풉니다.
+
+압축 해제 후 폴더 안에 아래 파일이 있어야 합니다.
+- `Film_Writer.py`
+- `requirements.txt`
+- `Film_Writer_icon.ico`
+- (선택) `fonts/`, `Camera Profile/`
+
+> 처음 실행 시 `fonts/`, `Camera Profile/` 폴더가 없다면 자동 생성됩니다(필요 시 기본 리소스가 seed될 수 있음).
+
+### 2) Python 설치 확인
+- Windows: **Python 3.10+** 권장(개발은 Python 3.13 기준)
+- macOS: **python3** 사용 권장
+
+터미널/PowerShell에서 확인:
 ```bash
+python --version
+# 또는 macOS
+python3 --version
+```
+
+### 3) 가상환경 생성/활성화 & 의존성 설치
+
+#### Windows (PowerShell)
+```powershell
+cd "압축 푼 폴더 경로"
 python -m venv .venv
-```
-
-### 2) 가상 환경 활성화
-
-- Windows
-```bat
-.venv\Scripts\activate
-```
-
-- macOS/Linux
-```bash
-source .venv/bin/activate
-```
-
-### 3) 의존성 설치
-```bash
+.\.venv\Scripts\Activate.ps1
+python -m pip install -U pip
 pip install -r requirements.txt
 ```
 
-### 4) 폰트(선택)
-
-- 기본 폰트 안내: 프로젝트 루트의 `fonts` 폴더에 `E1234.ttf`를 배치하면 기본 폰트로 사용됩니다.
-- 폰트를 지정하지 않으면 시스템 폰트 목록에서 자동으로 선택합니다.
-
-## 사용 방법 (Usage)
-
+#### macOS / Linux (Terminal)
 ```bash
-python film_exif_gui.py
+cd "압축 푼 폴더 경로"
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+pip install -r requirements.txt
 ```
 
-1. 좌측에서 JPG 파일을 추가합니다.
-2. 우측에서 날짜(YYYY-MM-DD)와 기준 시간(HH:MM)을 입력합니다. (날짜 없이도 기록 가능)
-3. GPS 좌표(위도/경도)를 필요 시 입력하고 “선택된 사진에 날짜/위치정보 적용”을 클릭합니다.
-4. 필름 정보/카메라 기종/렌즈를 입력합니다.
-5. 스탬프 옵션을 설정합니다. (기본값: OFF)
-6. 스탬프 ON일 때만 출력 폴더를 선택합니다. (OFF일 때는 원본 파일에 EXIF만 기록)
-7. “미리보기”로 결과를 확인한 뒤 “EXIF 기록 및 저장”을 클릭합니다.
-
-### 스탬프 ON/OFF 동작
-
-- 스탬프 OFF: 이미지 품질은 그대로 유지되고 원본 파일에 EXIF만 기록됩니다.
-- 스탬프 ON: 이미지가 재인코딩되며 우측 하단에 날짜가 오버레이됩니다. (날짜가 없으면 스탬프 불가)
-
-## 출력 파일 이름
-
-출력 파일은 각 파일의 할당 날짜/시간을 기준으로 `YYYYMMDDhhmm.jpg` 형식으로 저장됩니다. 날짜가 없을 경우 기본 파일명(`exif.jpg`)에 대해 중복 시 자동으로 번호가 붙습니다.
-
-## 구조 설명 (Structure)
-
-- [`film_exif_gui.py`](film_exif_gui.py)
-- `FileItem` 데이터 클래스
-- 날짜/시간 파싱 함수
-- EXIF 처리 함수 (`build_exif_bytes`, `load_existing_exif_bytes_from_file`)
-- 스탬프 오버레이 함수 ([`overlay_dateback_stamp()`](film_exif_gui.py:237))
-- GUI 클래스 [`App`](film_exif_gui.py:260) 및 주요 이벤트 메서드 (`_add_files`, `_apply_selected`, `_preview`, `_run`)
-
-## 제약 사항 및 참고
-
-- JPEG 파일만 지원합니다.
-- 폰트가 지정되지 않으면 기본 폰트 또는 시스템 폰트를 사용합니다.
-- 대량 처리 중 오류가 발생하면 작업이 중단됩니다.
-
-## requirements.txt
-
-```text
-Pillow>=10.0.0
-piexif>=1.1.3
-pywebview>=4.4
+### 4) 실행
+```bash
+python Film_Writer.py
 ```
 
-## 지도(좌표 선택) 안내
+---
 
-- “지도에서 불러오기”는 내장 지도 창을 열어 클릭한 위치를 좌표로 불러옵니다.
-- 지도는 OpenStreetMap 타일을 사용합니다.
+## 사용 방법 (GUI)
 
-## OpenStreetMap(OSM) 라이선스 안내
+### 1) JPG 목록 추가/정리
+- **JPG 추가**: 여러 JPG(또는 JPEG)를 선택해 목록에 추가
+- **선택 제거 / 모두 제거**: 목록 정리
 
-이 앱의 지도 화면은 OpenStreetMap(OSM) 데이터를 사용합니다.
+> JPEG만 지원합니다(`.jpg`, `.jpeg`).
 
-- © OpenStreetMap contributors
-- Open Database License (ODbL) 1.0
-- https://www.openstreetmap.org/copyright
+### 2) 날짜/시간 적용
+- 우측 상단에 **날짜(YYYY-MM-DD)** 입력
+- **기준 시작 시간(HH:MM)** 입력 (기본 `12:00`)
+- 왼쪽 목록에서 파일을 선택한 뒤 **「선택된 사진에 날짜/위치정보 적용」** 클릭  
+  - 선택된 파일들에 날짜가 할당됩니다.
+  - 실제 EXIF 기록은 **마지막에 “EXIF 기록 및 저장”**을 눌렀을 때 수행됩니다.
 
-## 라이선스 및 기여 (License & Contributing)
+### 3) 위치(GPS 좌표) 적용
+다음 중 하나로 좌표를 입력합니다.
+- **클립보드 붙여넣기**: 구글지도에서 좌표 복사 → 버튼 클릭  
+  (예: `37.5665, 126.9780`)
+- **지도에서 불러오기**: 지도 창에서 클릭한 위치를 자동 반영 (OpenStreetMap 타일 사용)
 
-- 이 프로젝트는 Apache License 2.0으로 배포됩니다. 자세한 내용은 `LICENSE` 파일을 참고하세요.
-- 기여/문의: Issue 또는 PR로 남겨주세요.
+좌표 입력 후 **「선택된 사진에 날짜/위치정보 적용」**을 눌러 선택된 파일에 적용합니다.
+
+### 4) 필름/카메라 정보
+- **카메라 기종 / 렌즈 / 필름 정보** 입력
+- **내보내기**: `Camera Profile` 폴더에 JSON 프로파일 저장
+- **불러오기**: 저장된 프로파일을 불러와 입력값 자동 채움
+
+### 5) 날짜 스탬프(선택)
+- **우측 하단 날짜 스탬프** 체크 시:
+  - 날짜 스탬프가 이미지에 오버레이되며 **새 파일로 저장**됩니다.
+  - **출력 폴더 선택**이 필수입니다.
+  - 스탬프 형식/블러/크기/오프셋을 조정할 수 있습니다.
+  - 폰트는 **폰트 파일 선택**으로 바꿀 수 있습니다.
+
+### 6) 미리보기 → EXIF 기록 및 저장
+- **미리보기**로 결과를 확인한 뒤
+- **EXIF 기록 및 저장**을 눌러 최종 기록/저장을 수행합니다.
+
+---
+
+## 저장 동작/파일명 규칙
+
+### 스탬프 OFF (기본)
+- 이미지를 다시 인코딩하지 않고 **원본 JPG 파일에 EXIF만 기록**합니다.  
+  (원본 파일이 수정됩니다)
+
+### 스탬프 ON
+- 스탬프가 들어간 **새 JPG 파일을 출력 폴더에 저장**합니다.
+- 파일명: `YYYYMMDDHHMM.jpg`  
+  - 같은 날짜 그룹에서 파일 순서대로 **1분 단위로 시간 증가**하여 저장합니다.
+- 동일 파일명이 이미 있으면 `..._1.jpg`, `..._2.jpg`처럼 자동으로 피합니다.
+
+---
+
+## 폴더 구성 (사용자 수정 가능)
+
+앱은 실행 위치(소스 실행 시 `.py`가 있는 폴더 / exe 실행 시 exe가 있는 폴더)에 아래 폴더를 사용합니다.
+
+- `fonts/`  
+  - 기본 폰트: `fonts/E1234.ttf` (있으면 기본값으로 사용)
+  - 사용자가 자유롭게 폰트를 추가/교체할 수 있습니다.
+- `Camera Profile/`  
+  - 카메라/렌즈/필름 정보를 JSON으로 저장/불러오기 합니다.
+  - 사용자가 자유롭게 파일을 추가/삭제할 수 있습니다.
+
+> **권한 주의:** `Program Files` 같은 보호된 경로에 exe/app을 두면 폴더 수정이 막힐 수 있습니다.  
+> 이 경우 사용자 문서 폴더 같은 **쓰기 가능한 위치**로 옮겨 사용하세요.
+
+---
+
+## 요구 사항 (requirements)
+`requirements.txt` 기준:
+- Pillow
+- piexif
+- pywebview
+
+Windows에서 “지도에서 불러오기(웹뷰)”가 동작하려면 보통 **Microsoft Edge WebView2 Runtime**이 필요할 수 있습니다.
+
+---
+
+## (개발자용) Windows 빌드: PyInstaller
+
+### OneFile (권장: 가변 리소스는 외부 폴더로 유지)
+> `fonts/`, `Camera Profile/`은 **내장하지 않습니다.**  
+> 배포 시 `Film_Writer.exe` 옆에 해당 폴더를 같이 두거나, 앱이 처음 실행 시 자동 생성 후 사용자가 채워 넣는 방식으로 운영합니다.
+
+PowerShell:
+```powershell
+python -m PyInstaller `
+  --name "Film_Writer" `
+  --noconfirm `
+  --clean `
+  --onefile `
+  --icon "Film_Writer_icon.ico" `
+  --add-data "Film_Writer_icon.ico;." `
+  --collect-submodules webview `
+  "Film_Writer.py"
+```
+
+결과물:
+- `dist/Film_Writer.exe`
+
+### OneDir (배포 폴더 형태)
+```powershell
+python -m PyInstaller `
+  --name "Film_Writer" `
+  --noconfirm `
+  --clean `
+  --windowed `
+  --icon "Film_Writer_icon.ico" `
+  --add-data "Film_Writer_icon.ico;." `
+  --collect-submodules webview `
+  "Film_Writer.py"
+```
+
+결과물:
+- `dist/Film_Writer/Film_Writer.exe`
+
+---
+
+## 지도(좌표 선택) 및 OpenStreetMap 라이선스
+- 지도 창은 Leaflet + OpenStreetMap 타일을 사용합니다.
+- © OpenStreetMap contributors / Open Database License (ODbL) 1.0
+
+---
+
+## 문제 해결 (FAQ)
+
+### Q1. “지도에서 불러오기”가 안 뜹니다.
+- Windows: WebView2 Runtime 설치 여부를 확인하세요.
+- pywebview 백엔드/보안 정책에 따라 환경별 이슈가 있을 수 있습니다.
+
+### Q2. 폰트가 적용되지 않습니다.
+- `fonts/E1234.ttf`가 존재하는지 확인하거나, GUI의 **폰트 파일 선택**으로 직접 지정하세요.
+
+### Q3. 스탬프 ON인데 저장이 안 됩니다.
+- 스탬프 ON일 때는 **출력 폴더 선택**이 필수입니다.
