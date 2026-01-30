@@ -10,7 +10,9 @@
 ## 빠른 시작 (ZIP 다운로드 기준)
 
 ### 1) ZIP 다운로드 & 압축 해제
-- 배포 버전의 FilmWriter.zip을 다운받아서 압축해제합니다.
+- GitHub Releases의 **v0.1.0**에서 배포 ZIP(릴리즈 파일 **1번 항목**)을 다운로드한 뒤 압축을 해제합니다.
+  - Release 페이지: [v0.1.0](https://github.com/User1122113/ExifEditor-for-film/releases/tag/v0.1.0)
+  - Assets에서 첫 번째 ZIP 파일을 받으세요.
 
 압축 해제 후 폴더 안에 아래 파일 및 폴더가 있어야 합니다.
 - `Film_Writer.exe`
