@@ -379,12 +379,12 @@ def build_exif_bytes(
 
     film_info = (film_info or "").strip()
     if film_info:
-        exif_dict["0th"][piexif.ImageIFD.ImageDescription] = film_info.encode("utf-8", errors="replace")
+        # exif_dict["0th"][piexif.ImageIFD.ImageDescription] = film_info.encode("utf-8", errors="replace")
         exif_dict["0th"][piexif.ImageIFD.XPKeywords] = film_info.encode("utf-16le") + b"\x00\x00"
-        exif_dict["Exif"][piexif.ExifIFD.UserComment] = piexif.helper.UserComment.dump(
-            film_info,
-            encoding="unicode",
-        )
+        # exif_dict["Exif"][piexif.ExifIFD.UserComment] = piexif.helper.UserComment.dump(
+        #     film_info,
+        #     encoding="unicode",
+        # )
 
     camera_model = (camera_model or "").strip()
     if camera_model:
