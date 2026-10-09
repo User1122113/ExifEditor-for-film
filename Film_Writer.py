@@ -29,6 +29,16 @@ import piexif.helper
 import webview
 
 EXIF_DT_FMT = "%Y:%m:%d %H:%M:%S"
+MAP_PICKER_USER_AGENT = (
+    "ExifEditor-for-film (+https://github.com/User1122113/ExifEditor-for-film)"
+)
+
+
+def _get_map_picker_storage_path() -> str:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return os.path.join(local_app_data, "ExifEditor-for-film", "pywebview")
+    return os.path.join(os.path.expanduser("~"), "AppData", "Local", "ExifEditor-for-film", "pywebview")
 
 
 def _get_app_dir() -> str:
@@ -183,9 +193,10 @@ MAP_PICKER_HTML = r"""
     const initLon = __INIT_LON__;
 
     const map = L.map('map').setView([initLat, initLon], 14);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
-      attribution: '&copy; OpenStreetMap contributors'
+      attribution: '&copy; OpenStreetMap contributors',
+      referrerPolicy: 'strict-origin-when-cross-origin'
     }).addTo(map);
 
     let marker = null;
@@ -323,7 +334,12 @@ def run_map_picker(queue: mp.Queue, initial_lat: float | None = None, initial_lo
     html = MAP_PICKER_HTML.replace("__INIT_LAT__", str(lat)).replace("__INIT_LON__", str(lon))
     api = MapPickerAPI(queue)
     webview.create_window("지도에서 위치 선택", html=html, js_api=api, width=980, height=700)
-    webview.start(debug=False)
+    webview.start(
+        debug=False,
+        user_agent=MAP_PICKER_USER_AGENT,
+        private_mode=False,
+        storage_path=_get_map_picker_storage_path(),
+    )
 
 
 def is_jpeg_path(p: str) -> bool:
